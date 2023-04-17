@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/livebud/bud/package/gomod"
+	"github.com/livebud/bud/package/log"
 	"github.com/livebud/bud/package/parser"
 )
 
@@ -18,6 +19,7 @@ type Finder interface {
 }
 
 func (i *Injector) Find(currModule *gomod.Module, dep Dependency) (Declaration, error) {
+	i.log.Field("for", dep.ID()).Debug("di: finding declaration")
 	// If modfile is nil, we default to the project modfile
 	if currModule == nil {
 		currModule = i.module
@@ -31,7 +33,7 @@ func (i *Injector) Find(currModule *gomod.Module, dep Dependency) (Declaration, 
 	// Find the module within the filesystem
 	nextModule, err := currModule.FindIn(fsys, dep.ImportPath())
 	if err != nil {
-		return nil, fmt.Errorf("di: unable to find module for dependency %s > %w", dep.ID(), err)
+		return nil, fmt.Errorf("di: unable to find module for dependency %s . %w", dep.ID(), err)
 	}
 	// Check again with the newly found module
 	if nextModule.Directory() != currModule.Directory() {
@@ -40,8 +42,7 @@ func (i *Injector) Find(currModule *gomod.Module, dep Dependency) (Declaration, 
 	// Resolve the package directory from within the module
 	dir, err := nextModule.ResolveDirectoryIn(fsys, dep.ImportPath())
 	if err != nil {
-		fmt.Println("error there")
-		return nil, fmt.Errorf("di: unable to find directory for dependency %s > %w", dep.ID(), err)
+		return nil, fmt.Errorf("di: unable to find directory for dependency %s . %w", dep.ID(), err)
 	}
 	rel, err := filepath.Rel(nextModule.Directory(), dir)
 	if err != nil {
@@ -60,6 +61,10 @@ func (i *Injector) Find(currModule *gomod.Module, dep Dependency) (Declaration, 
 			}
 			return nil, err
 		}
+		i.log.Fields(log.Fields{
+			"id":  decl.ID(),
+			"for": dep.ID(),
+		}).Debug("di: found function declaration")
 		return decl, nil
 	}
 	// Look through the structs
@@ -71,6 +76,25 @@ func (i *Injector) Find(currModule *gomod.Module, dep Dependency) (Declaration, 
 			}
 			return nil, err
 		}
+		i.log.Fields(log.Fields{
+			"id":  decl.ID(),
+			"for": dep.ID(),
+		}).Debug("di: found struct declaration")
+		return decl, nil
+	}
+	// Look through the type aliases
+	for _, alias := range pkg.Aliases() {
+		decl, err := tryTypeAlias(alias, dep.TypeName())
+		if err != nil {
+			if err == ErrNoMatch {
+				continue
+			}
+			return nil, err
+		}
+		i.log.Fields(log.Fields{
+			"id":  decl.ID(),
+			"for": dep.ID(),
+		}).Debug("di: found struct declaration")
 		return decl, nil
 	}
 	// TODO: add breadcrumbs to help with finding the root of this error

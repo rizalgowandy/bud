@@ -67,9 +67,19 @@ func Import(fsys fs.FS, dir string) (*build.Package, error) {
 	// messages
 	imported, err := buildContext(fsys).Import(".", dir, build.ImportMode(0))
 	if err != nil {
-		return nil, fmt.Errorf("parser: unable to import package %q > %w", dir, err)
+		return nil, fmt.Errorf("parser: unable to import package %q. %w", dir, err)
 	}
 	return imported, nil
+}
+
+// Check is a convenience function for tests to check Go code for syntax errors.
+func Check(code []byte) error {
+	fset := token.NewFileSet()
+	_, err := parser.ParseFile(fset, "", code, parser.DeclarationErrors)
+	if err != nil {
+		return fmt.Errorf("parser: unable to parse code the following:\n\n%s. %w", string(code), err)
+	}
+	return nil
 }
 
 // A Context specifies the supporting context for a build. We mostly use the
@@ -144,7 +154,11 @@ func buildContext(fsys fs.FS) *build.Context {
 		// OpenFile opens a file (not a directory) for reading.
 		// If OpenFile is nil, Import uses os.Open.
 		OpenFile: func(path string) (io.ReadCloser, error) {
-			return fsys.Open(path)
+			file, err := fsys.Open(path)
+			if err != nil {
+				return nil, err
+			}
+			return file, nil
 		},
 	}
 }

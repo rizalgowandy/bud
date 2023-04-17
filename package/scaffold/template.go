@@ -5,7 +5,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/livebud/bud/internal/gotemplate"
+	"github.com/livebud/bud/package/gotemplate"
 	"github.com/livebud/bud/package/vfs"
 	"golang.org/x/sync/errgroup"
 )
@@ -25,7 +25,7 @@ func (templates Templates) Write(fsys vfs.ReadWritable) error {
 type Template struct {
 	Path  string
 	Code  string
-	State any
+	State interface{}
 }
 
 func (t *Template) Write(fsys vfs.ReadWritable) error {

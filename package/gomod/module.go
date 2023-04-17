@@ -1,6 +1,7 @@
 package gomod
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,25 +10,21 @@ import (
 
 	"github.com/cespare/xxhash"
 	"github.com/livebud/bud/internal/gois"
-	"github.com/livebud/bud/internal/goroot"
-	"github.com/livebud/bud/package/vfs"
+	"github.com/livebud/bud/package/virtual"
 )
 
 type Module struct {
 	opt  *option
 	file *File
 	dir  string
+	fsys virtual.FS
 }
+
+var _ virtual.FS = (*Module)(nil)
 
 // Directory returns the module directory (e.g. /Users/$USER/...)
 func (m *Module) Directory(subpaths ...string) string {
 	return filepath.Join(append([]string{m.dir}, subpaths...)...)
-}
-
-// DirFS returns an OS filesystem you can read and write from.
-// TODO: remove vfs.ReadWritable
-func (m *Module) DirFS(subpaths ...string) vfs.ReadWritable {
-	return vfs.OS(m.Directory(subpaths...))
 }
 
 // ModCache returns the module cache directory
@@ -60,6 +57,23 @@ func (m *Module) FindIn(fsys fs.FS, importPath string) (*Module, error) {
 	return find(m.opt, dir)
 }
 
+func (m *Module) FindBy(match func(req *Require) bool) (modules []*Module, err error) {
+	for _, req := range m.file.Requires() {
+		if match(req) {
+			module, err := m.Find(req.Mod.Path)
+			if err != nil {
+				// Ignore imports that don't have a go.mod (e.g. legacy modules)
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			modules = append(modules, module)
+		}
+	}
+	return modules, nil
+}
+
 // Open a file within the module
 func (m *Module) Open(name string) (fs.File, error) {
 	return os.Open(filepath.Join(m.dir, name))
@@ -77,18 +91,29 @@ func (m *Module) ReadDir(name string) ([]fs.DirEntry, error) {
 }
 
 // ResolveImport returns an import path from a local directory.
-func (m *Module) ResolveImport(directory string) (importPath string, err error) {
-	relPath, err := filepath.Rel(m.dir, filepath.Clean(directory))
+func (m *Module) ResolveImport(dir string) (importPath string, err error) {
+	return m.resolveImport(dir, true)
+}
+
+func (m *Module) resolveImport(dir string, evalSymlinks bool) (string, error) {
+	relPath, err := filepath.Rel(m.dir, dir)
 	if err != nil {
 		return "", err
 	} else if strings.HasPrefix(relPath, "..") {
-		return "", fmt.Errorf("%q can't be outside the module directory %q", directory, m.dir)
+		if !evalSymlinks {
+			return "", fmt.Errorf("module: unable to resolve import. %q can't be outside the module directory %q", dir, m.dir)
+		}
+		// Maybe the directory is a symlink, resolve that symlink and try again.
+		if dir, err = filepath.EvalSymlinks(dir); err != nil {
+			return "", fmt.Errorf("module: unable to resolve import for %q. %w", dir, err)
+		}
+		return m.resolveImport(dir, false)
 	}
 	return m.Import(relPath), nil
 }
 
 // dir containing the standard libraries
-var stdDir = filepath.Join(goroot.Find(), "src")
+var stdDir = filepath.Join(findGoRoot(), "src")
 
 // ResolveDirectory resolves an import to an absolute path
 func (m *Module) ResolveDirectory(importPath string) (directory string, err error) {
@@ -118,7 +143,7 @@ func (m *Module) ResolveDirectoryIn(localFS fs.FS, importPath string) (directory
 		}
 		// Check if the package path exists
 		if _, err := fs.Stat(localFS, rel); err != nil {
-			return "", fmt.Errorf("mod: unable to resolve directory for package path %q: %w", importPath, err)
+			return "", fmt.Errorf("mod: unable to resolve directory for package path %q. %w", importPath, err)
 		}
 		absdir := filepath.Join(m.dir, rel)
 		return absdir, nil
@@ -134,7 +159,7 @@ func (m *Module) ResolveDirectoryIn(localFS fs.FS, importPath string) (directory
 			}
 			// Ensure the resolved directory exists.
 			if _, err := os.Stat(absdir); err != nil {
-				return "", fmt.Errorf("mod: unable to resolve directory for replaced import path %q: %w", importPath, err)
+				return "", fmt.Errorf("mod: unable to resolve directory for replaced import path %q. %w", importPath, err)
 			}
 			return absdir, nil
 		}
@@ -150,12 +175,12 @@ func (m *Module) ResolveDirectoryIn(localFS fs.FS, importPath string) (directory
 			absdir := filepath.Join(dir, relPath)
 			// Ensure the resolved directory exists.
 			if _, err := os.Stat(absdir); err != nil {
-				return "", fmt.Errorf("mod: unable to resolve directory for required import path %q: %w", importPath, err)
+				return "", fmt.Errorf("mod: unable to resolve directory for required import path %q. %w", importPath, err)
 			}
 			return absdir, nil
 		}
 	}
-	return "", fmt.Errorf("mod: unable to resolve directory for import path %q: %w", importPath, fs.ErrNotExist)
+	return "", fmt.Errorf("mod: unable to resolve directory for import path %q. %w", importPath, fs.ErrNotExist)
 }
 
 // Hash the module
@@ -164,6 +189,26 @@ func (m *Module) Hash() []byte {
 	h := xxhash.New()
 	h.Write(code)
 	return h.Sum(nil)
+}
+
+// MkdirAll creates dir within the module dir. Used to implement virtual.FS
+func (m *Module) MkdirAll(path string, perm fs.FileMode) error {
+	return m.fsys.MkdirAll(path, perm)
+}
+
+// WriteFile writes a file within the module dir. Used to implement virtual.FS.
+func (m *Module) WriteFile(name string, data []byte, perm fs.FileMode) error {
+	return m.fsys.WriteFile(name, data, perm)
+}
+
+// RemoveAll removes a file within the module dir. Used to implement virtual.FS.
+func (m *Module) RemoveAll(path string) error {
+	return m.fsys.RemoveAll(path)
+}
+
+// RemoveAll removes a file within the module dir. Used to implement virtual.FS.
+func (m *Module) Sub(dir string) (virtual.FS, error) {
+	return m.fsys.Sub(dir)
 }
 
 // Resolve allows `path` to be replaced by an absolute path in `rest`

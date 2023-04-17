@@ -1,16 +1,19 @@
 package di
 
 import (
+	"fmt"
 	"io/fs"
 
-	"github.com/livebud/bud/internal/imports"
 	"github.com/livebud/bud/package/gomod"
+	"github.com/livebud/bud/package/imports"
+	"github.com/livebud/bud/package/log"
 	"github.com/livebud/bud/package/parser"
 )
 
-func New(fsys fs.FS, module *gomod.Module, parser *parser.Parser) *Injector {
+func New(fsys fs.FS, log log.Log, module *gomod.Module, parser *parser.Parser) *Injector {
 	return &Injector{
 		fsys:   fsys,
+		log:    log,
 		module: module,
 		parser: parser,
 	}
@@ -19,6 +22,8 @@ func New(fsys fs.FS, module *gomod.Module, parser *parser.Parser) *Injector {
 type Injector struct {
 	// Filesystem to look for files
 	fsys fs.FS
+	// Logger to use
+	log log.Log
 	// Module where project dependencies will be wired
 	module *gomod.Module
 	// Go parser
@@ -28,6 +33,7 @@ type Injector struct {
 // Load the dependency graph, but don't generate any code. Load is intentionally
 // low-level and used by higher-level APIs like Generate.
 func (i *Injector) Load(fn *Function) (*Node, error) {
+	i.log.Field("fn", fn.Signature()).Debug("di: loading function")
 	// Validate the function
 	if err := fn.Validate(); err != nil {
 		return nil, err
@@ -37,10 +43,10 @@ func (i *Injector) Load(fn *Function) (*Node, error) {
 	for from, to := range fn.Aliases {
 		aliases[from.ID()] = to
 	}
-	externals := map[string]bool{}
+	externals := map[string]*Param{}
 	for _, param := range fn.Params {
 		id := param.ID()
-		externals[id] = true
+		externals[id] = param
 	}
 	root := &Node{
 		Import:      fn.Target,
@@ -63,20 +69,28 @@ func (i *Injector) Load(fn *Function) (*Node, error) {
 }
 
 // Load the dependencies recursively. This produces a dependency graph of nodes.
-func (i *Injector) load(externals map[string]bool, aliases map[string]Dependency, dep Dependency) (*Node, error) {
+func (i *Injector) load(externals map[string]*Param, aliases map[string]Dependency, dep Dependency) (*Node, error) {
 	// Replace dep with mapped type alias if we have one
 	if alias, ok := aliases[dep.ID()]; ok {
+		i.log.Fields(log.Fields{
+			"from": dep.ID(),
+			"to":   alias.ID(),
+		}).Debug("di: aliased dep")
 		dep = alias
 	}
 	// Handle external nodes
 	importPath := dep.ImportPath()
 	typeName := dep.TypeName()
 	id := dep.ID()
-	if externals[id] {
+	if param, ok := externals[id]; ok {
+		i.log.Fields(log.Fields{
+			"id": id,
+		}).Debug("di: marked external")
 		return &Node{
 			Import:   importPath,
 			Type:     typeName,
 			External: true,
+			Hoist:    param.Hoist,
 		}, nil
 	}
 	// Find the declaration that would instantiate this dependency
@@ -93,6 +107,10 @@ func (i *Injector) load(externals map[string]bool, aliases map[string]Dependency
 	deps := decl.Dependencies()
 	// Find and load the dependencies
 	for _, dep := range deps {
+		i.log.Fields(log.Fields{
+			"id":  dep.ID(),
+			"for": decl.ID(),
+		}).Debug("di: finding dependency")
 		child, err := i.load(externals, aliases, dep)
 		if err != nil {
 			return nil, err
@@ -107,7 +125,7 @@ func (i *Injector) load(externals map[string]bool, aliases map[string]Dependency
 func (i *Injector) Wire(fn *Function) (*Provider, error) {
 	node, err := i.Load(fn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("di: unable to wire %q.%s function. %w", fn.Target, fn.Name, err)
 	}
 	if fn.Imports == nil {
 		fn.Imports = imports.New()

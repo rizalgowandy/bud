@@ -48,6 +48,16 @@ func (pkg *Package) Files() []*File {
 	return pkg.files
 }
 
+// File finds a file in the list
+func (pkg *Package) File(name string) *File {
+	for _, file := range pkg.files {
+		if file.node.Name.Name == name {
+			return file
+		}
+	}
+	return nil
+}
+
 // Module returns the module or fails
 func (pkg *Package) Module() *gomod.Module {
 	return pkg.parser.module
@@ -101,7 +111,7 @@ func (k Kind) String() string {
 	case 3:
 		return "interface"
 	case 4:
-		return "alias"
+		return "typespec"
 	default:
 		return "unknown"
 	}
@@ -111,7 +121,7 @@ const (
 	KindBuiltin Kind = 1 + iota
 	KindStruct
 	KindInterface
-	KindAlias
+	KindTypeSpec
 )
 
 // Declaration interface
@@ -127,6 +137,16 @@ func (pkg *Package) Functions() (fns []*Function) {
 		fns = append(fns, file.Functions()...)
 	}
 	return fns
+}
+
+// Functions returns all the functions in a package
+func (pkg *Package) Function(name string) (fn *Function) {
+	for _, file := range pkg.Files() {
+		if fn = file.Function(name); fn != nil {
+			return fn
+		}
+	}
+	return nil
 }
 
 // PublicFunctions returns all public functions in the package
@@ -207,6 +227,13 @@ func (pkg *Package) Aliases() (aliases []*Alias) {
 		aliases = append(aliases, file.Aliases()...)
 	}
 	return aliases
+}
+
+func (pkg *Package) TypeSpecs() (typeSpecs []*TypeSpec) {
+	for _, file := range pkg.Files() {
+		typeSpecs = append(typeSpecs, file.TypeSpecs()...)
+	}
+	return typeSpecs
 }
 
 // var errIsBuiltin = errors.New("definition is a built-in type")

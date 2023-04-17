@@ -5,9 +5,19 @@ import (
 	"strings"
 
 	"github.com/livebud/bud/internal/gois"
-	"github.com/livebud/bud/internal/imports"
+	"github.com/livebud/bud/package/imports"
 	"github.com/livebud/bud/package/parser"
 )
+
+type Param struct {
+	Import string
+	Type   string
+	Hoist  bool
+}
+
+func (p *Param) ID() string {
+	return getID(p.Import, p.Type)
+}
 
 // Function is the top-level load function that we generate to provide all the
 // dependencies
@@ -17,7 +27,7 @@ type Function struct {
 	// Imports to pass through
 	Imports *imports.Set
 	// Params are the external parameters that are passed in
-	Params []Dependency
+	Params []*Param
 	// Results are the dependencies that need to be loaded
 	Results []Dependency
 	// Hoist dependencies that don't depend on externals, turning them into
@@ -35,6 +45,18 @@ var _ Declaration = (*Function)(nil)
 
 func (fn *Function) ID() string {
 	return getID(fn.Target, fn.Name)
+}
+
+func (fn *Function) Signature() string {
+	params := make([]string, len(fn.Params))
+	for i, param := range fn.Params {
+		params[i] = param.ID()
+	}
+	results := make([]string, len(fn.Results))
+	for i, result := range fn.Results {
+		results[i] = result.ID()
+	}
+	return fmt.Sprintf("%s(%s) (%s)", fn.Name, strings.Join(params, ", "), strings.Join(results, ", "))
 }
 
 func (fn *Function) Validate() error {
@@ -59,11 +81,10 @@ func (fn *Function) Generate(g Generator, ins []*Variable) (outs []*Variable) {
 // Given the following dependency: *Web, tryFunction will match on the
 // following functions:
 //
-//   func ...(...) *Web
-//   func ...(...) Web
-//   func ...(...) (*Web, error)
-//   func ...(...) (Web, error)
-//
+//	func ...(...) *Web
+//	func ...(...) Web
+//	func ...(...) (*Web, error)
+//	func ...(...) (Web, error)
 func tryFunction(fn *parser.Function, importPath, dataType string) (*function, error) {
 	if fn.Private() || fn.Receiver() != nil {
 		return nil, ErrNoMatch
@@ -100,17 +121,21 @@ func tryFunction(fn *parser.Function, importPath, dataType string) (*function, e
 		if gois.Builtin(pt.String()) {
 			return nil, ErrNoMatch
 		}
-		imPath, err := parser.ImportPath(pt)
+		def, err := param.Definition()
+		if err != nil {
+			importPath, err2 := parser.ImportPath(pt)
+			if err2 != nil {
+				return nil, err2
+			}
+			return nil, fmt.Errorf("di: unable to find definition for param %q.%s in %q.%s. %w", importPath, parser.Unqualify(pt).String(), importPath, dataType, err)
+		}
+		importPath, err := def.Package().Import()
 		if err != nil {
 			return nil, err
 		}
-		def, err := param.Definition()
-		if err != nil {
-			return nil, fmt.Errorf("di: unable to find definition for param %q.%s within %q.%s > %w", imPath, parser.Unqualify(pt).String(), importPath, dataType, err)
-		}
 		module := def.Package().Module()
 		function.Params = append(function.Params, &Type{
-			Import: imPath,
+			Import: importPath,
 			Type:   parser.Unqualify(pt).String(),
 			kind:   def.Kind(),
 			module: module,
@@ -118,24 +143,32 @@ func tryFunction(fn *parser.Function, importPath, dataType string) (*function, e
 	}
 	for _, result := range results {
 		rt := result.Type()
-		name := result.Name()
-		if name == "" {
-			name = parser.TypeName(rt)
-		}
-		imPath, err := parser.ImportPath(rt)
-		if err != nil {
-			return nil, err
+		// Most likely the error type
+		if gois.Builtin(rt.String()) {
+			function.Results = append(function.Results, &Type{
+				Import: importPath,
+				Type:   rt.String(),
+				kind:   parser.KindBuiltin,
+			})
+			continue
 		}
 		def, err := result.Definition()
 		if err != nil {
-			return nil, fmt.Errorf("di: unable to find definition for result %q.%s within %q.%s > %w", imPath, parser.Unqualify(rt).String(), importPath, dataType, err)
+			importPath, err2 := parser.ImportPath(rt)
+			if err2 != nil {
+				return nil, err2
+			}
+			return nil, fmt.Errorf("di: unable to find definition for result %q.%s in %q.%s. %w", importPath, parser.Unqualify(rt).String(), importPath, dataType, err)
+		}
+		importPath, err := def.Package().Import()
+		if err != nil {
+			return nil, err
 		}
 		unqualified := parser.Unqualify(rt)
 		function.Results = append(function.Results, &Type{
 			Import: importPath,
 			Type:   unqualified.String(),
 			kind:   def.Kind(),
-			name:   name,
 		})
 		continue
 	}
@@ -153,7 +186,7 @@ type function struct {
 var _ Declaration = (*function)(nil)
 
 func (fn *function) ID() string {
-	return `"` + fn.Import + `".` + fn.Name
+	return getID(fn.Import, fn.Name)
 }
 
 // Dependencies are the values that the funcDecl depends on to run
@@ -225,9 +258,9 @@ func maybePrefixParam(param *Type, input *Variable) string {
 	}
 	// Create a pointer to the input when param is an interface type, but the
 	// input is not an interface.
-	// TODO: This is hacky because input.Kind can't tell if it's a pointer to a
-	// struct vs. a struct, so we need extra logic to tell.
-	if !sameImport && isInterface(param.kind) && !isInterface(input.Kind) && !strings.HasPrefix(input.Type, "*") {
+	// TODO: This logic badly needs to be revisited. It's here to satisfy valid
+	// usage patterns, not because it makes sense.
+	if !sameImport && isInterface(param.kind) && !isInterface(input.Kind) && input.Kind != 0 && !strings.HasPrefix(input.Type, "*") {
 		return "&" + input.Name
 	}
 	// Passing through, not sure what to do.

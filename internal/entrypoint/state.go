@@ -2,7 +2,6 @@ package entrypoint
 
 import (
 	"encoding/base64"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,35 +11,6 @@ import (
 	"github.com/matthewmueller/gotext"
 )
 
-// type State struct {
-// 	Views []*View
-// }
-
-// func (s *State) Pages(suffixes ...string) (pages []string) {
-// 	suffix := strings.Join(suffixes, "")
-// 	for _, view := range s.Views {
-// 		pages = append(pages, string(view.Page)+suffix)
-// 	}
-// 	return pages
-// }
-
-// func (s *State) Imports() (imports []Path, err error) {
-// 	for _, view := range s.Views {
-// 		imports = append(imports, view.Page)
-// 	}
-// 	return imports, nil
-// }
-
-// func (s *State) FindViewByPage(page string) (*View, error) {
-// 	page = filepath.Clean(page)
-// 	for _, view := range s.Views {
-// 		if string(view.Page) == page {
-// 			return view, nil
-// 		}
-// 	}
-// 	return nil, fmt.Errorf("state: no view with a page named %q", page)
-// }
-
 type View struct {
 	Page   Path   // Path to the page
 	Type   string // View extension
@@ -49,7 +19,7 @@ type View struct {
 	Layout Path
 	Error  Path
 	Client string
-	Hot    bool
+	Hot    string
 }
 
 func (v *View) ServerImports() (imports []Path) {
@@ -71,13 +41,6 @@ func (v *View) BrowserImports() (imports []Path) {
 		imports = append(imports, v.Error)
 	}
 	return imports
-}
-
-// View data as a query string for the hot page
-func (v *View) Query() string {
-	values := url.Values{}
-	values.Set("page", "/bud/"+string(v.Page))
-	return values.Encode()
 }
 
 type Path string

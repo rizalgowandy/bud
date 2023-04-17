@@ -3,181 +3,25 @@ package socket_test
 import (
 	"context"
 	"errors"
-	"io/ioutil"
+	"io"
+	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/livebud/bud/internal/urlx"
+
+	"github.com/livebud/bud/internal/is"
 	"github.com/livebud/bud/package/socket"
-	"github.com/matryer/is"
 )
-
-func TestUnixPassthrough(t *testing.T) {
-	parent := func(t testing.TB) {
-		socketPath := filepath.Join(t.TempDir(), "tmp.sock")
-		is := is.New(t)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		// Ignore -test.count otherwise this will continue recursively
-		var args []string
-		for _, arg := range os.Args[1:] {
-			if strings.HasPrefix(arg, "-test.count=") {
-				continue
-			}
-			args = append(args, arg)
-		}
-		cmd := exec.CommandContext(ctx, os.Args[0], append(args, "-test.v=true", "-test.run=^TestUnixPassthrough$")...)
-		listener, err := socket.Listen(socketPath)
-		is.NoErr(err)
-		is.Equal(listener.Addr().Network(), "unix")
-		is.True(strings.HasSuffix(listener.Addr().String(), "tmp.sock"))
-		extras, env, err := socket.Files(listener)
-		is.NoErr(err)
-		is.Equal(len(extras), 1)
-		is.Equal(string(env), "LISTEN_FDS=1")
-		is.Equal(env.Key(), "LISTEN_FDS")
-		is.Equal(env.Value(), "1")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.ExtraFiles = append(cmd.ExtraFiles, extras...)
-		cmd.Env = append(os.Environ(), "CHILD=1", string(env))
-		is.NoErr(cmd.Start())
-		transport, err := socket.Transport(socketPath)
-		is.NoErr(err)
-		client := &http.Client{
-			Transport: transport,
-			Timeout:   time.Second,
-		}
-		res, err := client.Get("http://host/hello")
-		is.NoErr(err)
-		body, err := ioutil.ReadAll(res.Body)
-		is.NoErr(err)
-		is.Equal(string(body), "/hello")
-		_, err = client.Get("http://host/hello")
-		is.NoErr(err)
-		is.NoErr(cmd.Wait())
-	}
-
-	child := func(t testing.TB) {
-		is := is.New(t)
-		// Note: this should timeout if we actually use this new socket path and not
-		// the file that's been passed in
-		listener, err := socket.Load(filepath.Join(t.TempDir(), "tmp.sock"))
-		is.NoErr(err)
-		count := 0
-		server := &http.Server{}
-		server.Addr = listener.Addr().String()
-		server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch count {
-			case 0:
-				count++
-				os.Stderr.Write([]byte("stderr"))
-				os.Stdout.Write([]byte("stdout"))
-				w.Write([]byte(r.URL.Path))
-			case 1:
-				go server.Shutdown(context.Background())
-				return
-			}
-		})
-		if err := server.Serve(listener); err != nil {
-			if !errors.Is(err, http.ErrServerClosed) {
-				is.NoErr(err)
-			}
-		}
-	}
-
-	if value := os.Getenv("CHILD"); value != "" {
-		child(t)
-	} else {
-		parent(t)
-	}
-}
-
-func TestTCPPassthrough(t *testing.T) {
-	parent := func(t testing.TB) {
-		is := is.New(t)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		// Ignore -test.count otherwise this will continue recursively
-		var args []string
-		for _, arg := range os.Args[1:] {
-			if strings.HasPrefix(arg, "-test.count=") {
-				continue
-			}
-			args = append(args, arg)
-		}
-		cmd := exec.CommandContext(ctx, os.Args[0], append(args, "-test.v=true", "-test.run=TestUnixPassthrough")...)
-		listener, err := socket.Listen(":0")
-		is.NoErr(err)
-		is.Equal(listener.Addr().Network(), "tcp")
-		is.True(strings.HasPrefix(listener.Addr().String(), "127.0.0.1:"))
-		extras, env, err := socket.Files(listener)
-		is.NoErr(err)
-		is.Equal(len(extras), 1)
-		is.Equal(string(env), "LISTEN_FDS=1")
-		is.Equal(env.Key(), "LISTEN_FDS")
-		is.Equal(env.Value(), "1")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.ExtraFiles = append(cmd.ExtraFiles, extras...)
-		cmd.Env = append(os.Environ(), "CHILD=1", string(env))
-		is.NoErr(cmd.Start())
-		transport, err := socket.Transport(listener.Addr().String())
-		is.NoErr(err)
-		client := &http.Client{
-			Transport: transport,
-			Timeout:   time.Second,
-		}
-		res, err := client.Get("http://" + listener.Addr().String() + "/hello")
-		is.NoErr(err)
-		body, err := ioutil.ReadAll(res.Body)
-		is.NoErr(err)
-		is.Equal(string(body), "/hello")
-		_, err = client.Get("http://" + listener.Addr().String() + "/hello")
-		is.NoErr(err)
-		is.NoErr(cmd.Wait())
-	}
-
-	child := func(t testing.TB) {
-		is := is.New(t)
-		// Note: this should timeout if we actually use this new socket path and not
-		// the file that's been passed in
-		listener, err := socket.Load(":0")
-		is.NoErr(err)
-		count := 0
-		server := &http.Server{}
-		server.Addr = listener.Addr().String()
-		server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch count {
-			case 0:
-				count++
-				w.Write([]byte(r.URL.Path))
-			case 1:
-				go server.Shutdown(context.Background())
-				return
-			}
-		})
-		if err := server.Serve(listener); err != nil {
-			if !errors.Is(err, http.ErrServerClosed) {
-				is.NoErr(err)
-			}
-		}
-	}
-
-	if value := os.Getenv("CHILD"); value != "" {
-		child(t)
-	} else {
-		parent(t)
-	}
-}
 
 func TestLoadTCP(t *testing.T) {
 	is := is.New(t)
-	listener, err := socket.Load(":0")
+	listener, err := socket.Listen(":0")
 	is.NoErr(err)
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +37,7 @@ func TestLoadTCP(t *testing.T) {
 	}
 	res, err := client.Get("http://" + listener.Addr().String() + "/hello")
 	is.NoErr(err)
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	is.NoErr(err)
 	is.Equal(string(body), "/hello")
 	server.Shutdown(context.Background())
@@ -201,7 +45,7 @@ func TestLoadTCP(t *testing.T) {
 
 func TestLoadNumberOnly(t *testing.T) {
 	is := is.New(t)
-	listener, err := socket.Load("0")
+	listener, err := socket.Listen("0")
 	is.NoErr(err)
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -217,8 +61,114 @@ func TestLoadNumberOnly(t *testing.T) {
 	}
 	res, err := client.Get("http://" + listener.Addr().String() + "/hello")
 	is.NoErr(err)
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	is.NoErr(err)
 	is.Equal(string(body), "/hello")
 	server.Shutdown(context.Background())
+}
+
+// This test is used to determine what the maximum socket length is.
+// It should always fail.
+func TestSocketLength(t *testing.T) {
+	t.SkipNow()
+	tmpDir := t.TempDir()
+	for i := 1; i < 1000; i++ {
+		socketPath := filepath.Join(tmpDir, strings.Repeat("a", i)+".sock")
+		listener, err := socket.Listen(socketPath)
+		if err != nil {
+			t.Fatalf("failed at %d: %s", len(socketPath), err)
+		}
+		if err := listener.Close(); err != nil {
+			t.Fatalf("unable to close listener: %s", err)
+		}
+	}
+}
+
+func TestDial(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	listener, err := socket.Listen(":0")
+	is.NoErr(err)
+	defer listener.Close()
+	msg := "hello world"
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			incoming := make([]byte, len(msg))
+			if _, err := io.ReadFull(conn, incoming); err != nil {
+				conn.Close()
+				return
+			}
+			conn.Write([]byte(string(incoming)))
+			conn.Write([]byte(string(incoming)))
+			conn.Close()
+		}
+	}()
+	conn, err := socket.Dial(ctx, listener.Addr().String())
+	is.NoErr(err)
+	defer conn.Close()
+	conn.Write([]byte(msg))
+	outgoing := make([]byte, len(msg)*2)
+	_, err = io.ReadFull(conn, outgoing)
+	is.NoErr(err)
+	is.Equal(string(outgoing), msg+msg)
+}
+
+func TestUDSCleanup(t *testing.T) {
+	is := is.New(t)
+	listener, err := socket.Listen("./test.sock")
+	is.NoErr(err)
+	defer listener.Close()
+	is.NoErr(listener.Close())
+	stat, err := os.Stat("test.sock")
+	is.True(errors.Is(err, os.ErrNotExist))
+	is.Equal(stat, nil)
+}
+
+func TestListenUp(t *testing.T) {
+	is := is.New(t)
+	// Letting the OS decide leads to port conflicts when run with other tests
+	ln0, err := socket.Listen(":10000")
+	is.NoErr(err)
+	defer ln0.Close()
+	ln1, err := socket.ListenUp(ln0.Addr().String(), 5)
+	is.NoErr(err)
+	defer ln1.Close()
+	priorURL, err := urlx.Parse(ln0.Addr().String())
+	is.NoErr(err)
+	priorPort, err := strconv.Atoi(priorURL.Port())
+	is.NoErr(err)
+	url, err := urlx.Parse(ln1.Addr().String())
+	is.NoErr(err)
+	port, err := strconv.Atoi(url.Port())
+	is.NoErr(err)
+	is.Equal(port, priorPort+1)
+}
+
+func TestListenMaxAttemptsReached(t *testing.T) {
+	is := is.New(t)
+	// Letting the OS decide leads to port conflicts when run with other tests
+	ln0, err := socket.Listen(":20000")
+	is.NoErr(err)
+	defer ln0.Close()
+	// This one should work
+	ln1, err := socket.ListenUp(ln0.Addr().String(), 1)
+	is.NoErr(err)
+	defer ln1.Close()
+	// This one should fail because we're using ln0 as the base
+	ln2, err := socket.ListenUp(ln0.Addr().String(), 1)
+	is.True(errors.Is(err, socket.ErrAddrInUse))
+	is.Equal(ln2, nil)
+}
+
+func TestListenPortTooHigh(t *testing.T) {
+	is := is.New(t)
+	ln0, err := socket.Listen(":65536")
+	ae, ok := err.(*net.AddrError)
+	is.True(ok)
+	is.Equal(ae.Err, "invalid port")
+	is.Equal(ln0, nil)
 }

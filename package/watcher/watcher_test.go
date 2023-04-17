@@ -11,8 +11,8 @@ import (
 	"github.com/livebud/bud/package/watcher"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/livebud/bud/internal/is"
 	"github.com/livebud/bud/package/vfs"
-	"github.com/matryer/is"
 )
 
 var waitForEvents = 500 * time.Millisecond
@@ -32,12 +32,12 @@ func writeFiles(dir string, files map[string]string) error {
 	return eg.Wait()
 }
 
-func getEvent(event <-chan string) (string, error) {
+func getEvent(event <-chan []watcher.Event) ([]watcher.Event, error) {
 	select {
-	case path := <-event:
-		return path, nil
+	case events := <-event:
+		return events, nil
 	case <-time.After(1 * time.Second):
-		return "", errors.New("timed out while waiting for watcher")
+		return nil, errors.New("timed out while waiting for watcher events")
 	}
 }
 
@@ -49,13 +49,14 @@ func TestChange(t *testing.T) {
 	})
 	is.NoErr(err)
 	ctx := context.Background()
-	event := make(chan string, 1)
+	eventCh := make(chan []watcher.Event)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	eg := new(errgroup.Group)
 	eg.Go(func() error {
-		return watcher.Watch(ctx, dir, func(path string) error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
 			select {
-			case event <- path:
+			case eventCh <- events:
 			case <-ctx.Done():
 			}
 			return nil
@@ -64,9 +65,11 @@ func TestChange(t *testing.T) {
 	time.Sleep(waitForEvents)
 	err = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("b"), 0644)
 	is.NoErr(err)
-	path, err := getEvent(event)
+	events, err := getEvent(eventCh)
 	is.NoErr(err)
-	is.Equal(path, filepath.Join(dir, "a.txt"))
+	is.Equal(len(events), 1)
+	is.Equal(events[0].Path, "a.txt")
+	is.Equal(events[0].Op, watcher.OpUpdate)
 	cancel()
 	is.NoErr(eg.Wait())
 }
@@ -79,13 +82,14 @@ func TestDelete(t *testing.T) {
 	})
 	is.NoErr(err)
 	ctx := context.Background()
-	event := make(chan string, 1)
+	eventCh := make(chan []watcher.Event)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	eg := new(errgroup.Group)
 	eg.Go(func() error {
-		return watcher.Watch(ctx, dir, func(path string) error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
 			select {
-			case event <- path:
+			case eventCh <- events:
 			case <-ctx.Done():
 			}
 			return nil
@@ -94,9 +98,11 @@ func TestDelete(t *testing.T) {
 	time.Sleep(waitForEvents)
 	err = os.RemoveAll(filepath.Join(dir, "a.txt"))
 	is.NoErr(err)
-	path, err := getEvent(event)
+	events, err := getEvent(eventCh)
 	is.NoErr(err)
-	is.Equal(path, filepath.Join(dir, "a.txt"))
+	is.Equal(len(events), 1)
+	is.Equal(events[0].Path, "a.txt")
+	is.Equal(events[0].Op, watcher.OpDelete)
 	cancel()
 	is.NoErr(eg.Wait())
 }
@@ -105,13 +111,14 @@ func TestCreate(t *testing.T) {
 	is := is.New(t)
 	dir := t.TempDir()
 	ctx := context.Background()
-	event := make(chan string, 1)
+	eventCh := make(chan []watcher.Event)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	eg := new(errgroup.Group)
 	eg.Go(func() error {
-		return watcher.Watch(ctx, dir, func(path string) error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
 			select {
-			case event <- path:
+			case eventCh <- events:
 			case <-ctx.Done():
 			}
 			return nil
@@ -120,9 +127,11 @@ func TestCreate(t *testing.T) {
 	time.Sleep(waitForEvents)
 	err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("b"), 0644)
 	is.NoErr(err)
-	path, err := getEvent(event)
+	events, err := getEvent(eventCh)
 	is.NoErr(err)
-	is.Equal(path, filepath.Join(dir, "a.txt"))
+	is.Equal(len(events), 1)
+	is.Equal(events[0].Path, "a.txt")
+	is.Equal(events[0].Op, watcher.OpCreate)
 	cancel()
 	is.NoErr(eg.Wait())
 }
@@ -131,13 +140,14 @@ func TestCreateRecursive(t *testing.T) {
 	is := is.New(t)
 	dir := t.TempDir()
 	ctx := context.Background()
-	event := make(chan string, 1)
+	eventCh := make(chan []watcher.Event)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	eg := new(errgroup.Group)
 	eg.Go(func() error {
-		return watcher.Watch(ctx, dir, func(path string) error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
 			select {
-			case event <- path:
+			case eventCh <- events:
 			case <-ctx.Done():
 			}
 			return nil
@@ -146,14 +156,15 @@ func TestCreateRecursive(t *testing.T) {
 	time.Sleep(waitForEvents)
 	err := os.MkdirAll(filepath.Join(dir, "b"), 0755)
 	is.NoErr(err)
-	path, err := getEvent(event)
-	is.NoErr(err)
-	is.Equal(path, filepath.Join(dir, "b"))
 	err = os.WriteFile(filepath.Join(dir, "b", "a.txt"), []byte("b"), 0644)
 	is.NoErr(err)
-	path, err = getEvent(event)
+	events, err := getEvent(eventCh)
 	is.NoErr(err)
-	is.Equal(path, filepath.Join(dir, "b", "a.txt"))
+	is.Equal(len(events), 2)
+	is.Equal(events[0].Path, "b")
+	is.Equal(events[0].Op, watcher.OpCreate)
+	is.Equal(events[1].Path, "b/a.txt")
+	is.Equal(events[0].Op, watcher.OpCreate)
 	cancel()
 	is.NoErr(eg.Wait())
 }
@@ -162,13 +173,14 @@ func TestWithScaffold(t *testing.T) {
 	is := is.New(t)
 	dir := t.TempDir()
 	ctx := context.Background()
-	event := make(chan string, 4)
+	eventCh := make(chan []watcher.Event)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	eg := new(errgroup.Group)
 	eg.Go(func() error {
-		return watcher.Watch(ctx, dir, func(path string) error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
 			select {
-			case event <- path:
+			case eventCh <- events:
 			case <-ctx.Done():
 			}
 			return nil
@@ -181,31 +193,95 @@ func TestWithScaffold(t *testing.T) {
 		"view/show.svelte":         `<h1>show</h1>`,
 	})
 	is.NoErr(err)
-	paths := map[string]bool{}
-	for i := 1; i <= 5; i++ {
-		path, err := getEvent(event)
-		is.NoErr(err)
-		rel, err := filepath.Rel(dir, path)
-		is.NoErr(err)
-		paths[rel] = true
-	}
-	is.True(paths["controller"])
-	is.True(paths["controller/controller.go"])
-	is.True(paths["view"])
-	is.True(paths["view/index.svelte"])
-	is.True(paths["view/show.svelte"])
-	// While there should be no more events, testing this can be flaky in CI.
-	// Instead test that we don't have any events with unexpected paths.
-	// An extra event isn't the end of the world, it'll just reload one more time.
+	events, err := getEvent(eventCh)
+	is.NoErr(err)
+	is.Equal(len(events), 5)
+	is.Equal(events[0].Path, "controller")
+	is.Equal(events[0].Op, watcher.OpCreate)
+	is.Equal(events[1].Path, "controller/controller.go")
+	is.Equal(events[1].Op, watcher.OpCreate)
+	is.Equal(events[2].Path, "view")
+	is.Equal(events[2].Op, watcher.OpCreate)
+	is.Equal(events[3].Path, "view/index.svelte")
+	is.Equal(events[3].Op, watcher.OpCreate)
+	is.Equal(events[4].Path, "view/show.svelte")
+	is.Equal(events[4].Op, watcher.OpCreate)
+	// Test that there's only been one event
 	select {
-	case path := <-event:
-		rel, err := filepath.Rel(dir, path)
-		is.NoErr(err)
-		if _, ok := paths[rel]; !ok {
-			t.Fatalf("unexpected event: %q", path)
-		}
+	case <-eventCh:
+		t.Fatalf("unexpected extra event")
 	case <-time.Tick(waitForEvents):
 	}
+	cancel()
+	is.NoErr(eg.Wait())
+}
+
+func TestWithRootDotFile(t *testing.T) {
+	is := is.New(t)
+	dir := t.TempDir()
+	ctx := context.Background()
+	eventCh := make(chan []watcher.Event)
+	err := writeFiles(dir, map[string]string{
+		"controller/controller.go": `package controller`,
+		".envrc":                   `export FOO=bar`,
+		".gitignore":               `.envrc`,
+	})
+	is.NoErr(err)
+	eg := new(errgroup.Group)
+	eg.Go(func() error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
+			select {
+			case eventCh <- events:
+			case <-ctx.Done():
+			}
+			return nil
+		})
+	})
+	time.Sleep(waitForEvents)
+	// Update the event
+	err = writeFiles(dir, map[string]string{
+		"controller/controller.go": `package controller2`,
+	})
+	is.NoErr(err)
+	// Get event
+	events, err := getEvent(eventCh)
+	is.NoErr(err)
+	is.Equal(len(events), 1)
+	is.Equal(events[0].Path, "controller/controller.go")
+	is.Equal(events[0].Op, watcher.OpUpdate)
+}
+
+func TestRename(t *testing.T) {
+	is := is.New(t)
+	dir := t.TempDir()
+	err := vfs.Write(dir, vfs.Map{
+		"a.txt": []byte(`a`),
+	})
+	is.NoErr(err)
+	ctx := context.Background()
+	eventCh := make(chan []watcher.Event)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eg := new(errgroup.Group)
+	eg.Go(func() error {
+		return watcher.Watch(ctx, dir, func(events []watcher.Event) error {
+			select {
+			case eventCh <- events:
+			case <-ctx.Done():
+			}
+			return nil
+		})
+	})
+	time.Sleep(waitForEvents)
+	err = os.Rename(filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt"))
+	is.NoErr(err)
+	events, err := getEvent(eventCh)
+	is.NoErr(err)
+	is.Equal(len(events), 2)
+	is.Equal(events[0].Path, "b.txt")
+	is.Equal(events[0].Op, watcher.OpCreate)
+	is.Equal(events[1].Path, "a.txt")
+	is.Equal(events[1].Op, watcher.OpDelete)
 	cancel()
 	is.NoErr(eg.Wait())
 }

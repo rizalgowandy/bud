@@ -1,3 +1,5 @@
+// Package vfs is deprecated and will be deleted once remaining code is migrated
+// All new functionality should go in the virtual package.
 package vfs
 
 import (
@@ -18,7 +20,7 @@ type ReadWritable interface {
 	Writable
 }
 
-// Now may be overriden for testing purposes
+// Now may be overridden for testing purposes
 var Now = func() time.Time {
 	return time.Now()
 }

@@ -7,10 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/livebud/bud/package/genfs"
+	"github.com/livebud/bud/package/log/testlog"
+	"github.com/livebud/bud/package/virtual"
+
+	"github.com/livebud/bud/internal/dag"
 	"github.com/livebud/bud/internal/dsync"
-	"github.com/livebud/bud/package/conjure"
+	"github.com/livebud/bud/internal/is"
 	"github.com/livebud/bud/package/vfs"
-	"github.com/matryer/is"
 )
 
 func TestFileSync(t *testing.T) {
@@ -30,7 +34,7 @@ func TestFileSync(t *testing.T) {
 	}
 
 	// sync
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, targetFS, ".")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 2)
 
@@ -76,7 +80,7 @@ func TestDirSync(t *testing.T) {
 	}
 
 	// sync
-	err := dsync.Dir(sourceFS, "duo", targetFS, "duo")
+	err := dsync.To(sourceFS, targetFS, "duo")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 5)
 
@@ -151,7 +155,7 @@ func TestNoDuo(t *testing.T) {
 	targetFS := vfs.Memory{}
 
 	// sync
-	err := dsync.Dir(sourceFS, "duo", targetFS, "duo")
+	err := dsync.To(sourceFS, targetFS, "duo")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 2)
 
@@ -179,40 +183,58 @@ func TestNoDuo(t *testing.T) {
 
 func TestSkipNotExist(t *testing.T) {
 	is := is.New(t)
-	// before := time.Date(2021, 8, 4, 14, 56, 0, 0, time.UTC)
-	after := time.Date(2021, 8, 4, 14, 57, 0, 0, time.UTC)
-	vfs.Now = func() time.Time { return after }
+	log := testlog.New()
 
 	// starting points
-	sourceFS := conjure.New()
-	sourceFS.GenerateFile("bud/generate/main.go", func(file *conjure.File) error {
+	sourceFS := genfs.New(dag.Discard, virtual.List{}, log)
+	sourceFS.GenerateFile("bud/generate/main.go", func(fsys genfs.FS, file *genfs.File) error {
 		return fs.ErrNotExist
 	})
-	targetFS := vfs.Memory{}
+	targetFS := virtual.List{}
 
 	// sync
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, &targetFS, ".")
+	is.NoErr(err)
+	is.Equal(len(targetFS), 0)
+}
+
+func TestSkipDirNotExist(t *testing.T) {
+	is := is.New(t)
+	log := testlog.New()
+
+	// starting points
+	sourceFS := genfs.New(dag.Discard, virtual.List{}, log)
+	sourceFS.GenerateDir("bud/generate", func(fsys genfs.FS, dir *genfs.Dir) error {
+		return fs.ErrNotExist
+	})
+	targetFS := virtual.List{}
+
+	// sync
+	err := dsync.To(sourceFS, &targetFS, ".")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 0)
 }
 
 func TestErrorGenerator(t *testing.T) {
 	is := is.New(t)
+	log := testlog.New()
+
 	// before := time.Date(2021, 8, 4, 14, 56, 0, 0, time.UTC)
 	after := time.Date(2021, 8, 4, 14, 57, 0, 0, time.UTC)
 	vfs.Now = func() time.Time { return after }
 
 	// starting points
-	sourceFS := conjure.New()
-	sourceFS.GenerateFile("bud/generate/main.go", func(file *conjure.File) error {
+	sourceFS := genfs.New(dag.Discard, virtual.List{}, log)
+	sourceFS.GenerateFile("bud/generate/main.go", func(fsys genfs.FS, file *genfs.File) error {
 		return errors.New("uh oh")
 	})
-	targetFS := vfs.Memory{}
+	targetFS := virtual.List{}
 
 	// sync
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, &targetFS, ".")
 	is.True(err != nil)
-	is.Equal(err.Error(), `conjure: generate "bud/generate/main.go" > uh oh`)
+	is.In(err.Error(), `uh oh`)
+	is.True(!errors.Is(err, fs.ErrNotExist))
 	is.Equal(len(targetFS), 0)
 }
 
@@ -225,7 +247,7 @@ func TestWithSkip(t *testing.T) {
 	targetFS := vfs.Memory{
 		"node_modules/svelte/svelte.js": &vfs.File{Data: []byte("svelte")},
 	}
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, targetFS, ".")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 1) // this should have deleted node_modules
 	// starting points
@@ -256,7 +278,7 @@ func TestAvoidDotCreate(t *testing.T) {
 		".": &vfs.File{Mode: fs.ModeDir},
 	}
 	targetFS := vfs.Memory{}
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, targetFS, ".")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 0)
 }
@@ -270,7 +292,7 @@ func TestAvoidDotUpdate(t *testing.T) {
 	targetFS := vfs.Memory{
 		".": &vfs.File{Mode: fs.ModeDir | 0755},
 	}
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, targetFS, ".")
 	is.NoErr(err)
 	is.Equal(len(targetFS), 1)
 }
@@ -283,7 +305,7 @@ func TestAvoidDotDelete(t *testing.T) {
 	targetFS := vfs.Memory{
 		".": &vfs.File{Mode: fs.ModeDir},
 	}
-	err := dsync.Dir(sourceFS, ".", targetFS, ".")
+	err := dsync.To(sourceFS, targetFS, ".")
 	is.NoErr(err)
 	// . should be ignored
 	is.Equal(len(targetFS), 1)
@@ -323,4 +345,36 @@ func TestRel(t *testing.T) {
 	rel, err = dsync.Rel("bud", "app")("bud/a/a.go")
 	is.NoErr(err)
 	is.Equal(rel, "app/a/a.go")
+}
+
+func TestDeleteNotExist(t *testing.T) {
+	is := is.New(t)
+	log := testlog.New()
+
+	// starting points
+	sourceFS := genfs.New(dag.Discard, virtual.List{}, log)
+	notExist := false
+	sourceFS.GenerateFile("bud/generate/main.go", func(fsys genfs.FS, file *genfs.File) error {
+		if notExist {
+			return fs.ErrNotExist
+		}
+		file.Data = []byte("package main")
+		return nil
+	})
+	targetFS := virtual.OS(t.TempDir())
+
+	// sync
+	err := dsync.To(sourceFS, targetFS, ".")
+	is.NoErr(err)
+	data, err := fs.ReadFile(targetFS, "bud/generate/main.go")
+	is.NoErr(err)
+	is.Equal(string(data), "package main")
+
+	// set not exist and sync again
+	notExist = true
+	err = dsync.To(sourceFS, targetFS, ".")
+	is.NoErr(err)
+	data, err = fs.ReadFile(targetFS, "bud/generate/main.go")
+	is.True(errors.Is(err, fs.ErrNotExist))
+	is.Equal(data, nil)
 }

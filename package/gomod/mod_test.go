@@ -1,21 +1,22 @@
 package gomod_test
 
 import (
+	"context"
 	"errors"
 	"go/build"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/livebud/bud/internal/fscache"
-	"github.com/livebud/bud/internal/testdir"
 	"github.com/livebud/bud/package/gomod"
 	"github.com/livebud/bud/package/modcache"
+	"github.com/livebud/bud/package/testdir"
 	"github.com/livebud/bud/package/vfs"
 
-	"github.com/matryer/is"
+	"github.com/livebud/bud/internal/is"
 )
 
 func containsName(des []fs.DirEntry, name string) bool {
@@ -65,9 +66,9 @@ func TestResolveDirectory(t *testing.T) {
 	modCache := modcache.Default()
 	module, err := gomod.Find(wd, gomod.WithModCache(modCache))
 	is.NoErr(err)
-	dir, err := module.ResolveDirectory("github.com/matryer/is")
+	dir, err := module.ResolveDirectory("github.com/evanw/esbuild")
 	is.NoErr(err)
-	expected := modCache.Directory("github.com", "matryer", "is")
+	expected := modCache.Directory("github.com", "evanw", "esbuild")
 	is.True(strings.HasPrefix(dir, expected))
 }
 
@@ -145,18 +146,23 @@ func TestModuleFindStdlib(t *testing.T) {
 	is.NoErr(err)
 	imp, err := module.ResolveImport(module.Directory())
 	is.NoErr(err)
-	is.Equal(imp, "std")
+	is.Equal(imp, ".")
+	dir := module.Directory("net/http")
+	expected := filepath.Join(build.Default.GOROOT, "src", "net", "http")
+	is.Equal(dir, expected)
+	is.Equal(module.Import("net/http"), "net/http")
 }
 
 func TestFindNested(t *testing.T) {
 	is := is.New(t)
-	dir := t.TempDir()
-	td := testdir.New()
-	td.Modules["github.com/livebud/bud-test-plugin"] = "v0.0.8"
-	err := td.Write(dir)
+	ctx := context.Background()
+	td, err := testdir.Load()
+	is.NoErr(err)
+	td.Modules["github.com/livebud/bud-test-plugin"] = "v0.0.9"
+	err = td.Write(ctx)
 	is.NoErr(err)
 	modCache := modcache.Default()
-	module1, err := gomod.Find(dir)
+	module1, err := gomod.Find(td.Directory())
 	is.NoErr(err)
 	data, err := fs.ReadFile(module1, "go.mod")
 	is.NoErr(err)
@@ -167,7 +173,7 @@ func TestFindNested(t *testing.T) {
 	module2, err := module1.Find("github.com/livebud/bud-test-plugin")
 	is.NoErr(err)
 	is.Equal(module2.Import(), "github.com/livebud/bud-test-plugin")
-	is.Equal(module2.Directory(), modCache.Directory("github.com/livebud", "bud-test-plugin@v0.0.8"))
+	is.Equal(module2.Directory(), modCache.Directory("github.com/livebud", "bud-test-plugin@v0.0.9"))
 	data, err = fs.ReadFile(module2, "go.mod")
 	is.NoErr(err)
 	m2, err := gomod.Parse("go.mod", data)
@@ -187,13 +193,13 @@ func TestFindNested(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(m3.Import(), "github.com/livebud/bud-test-nested-plugin")
 
-	// Ensure module1 is not overriden
+	// Ensure module1 is not overridden
 	is.Equal(module1.Import(), "app.com")
-	is.Equal(module1.Directory(), dir)
+	is.Equal(module1.Directory(), td.Directory())
 
-	// Ensure module2 is not overriden
+	// Ensure module2 is not overridden
 	is.Equal(module2.Import(), "github.com/livebud/bud-test-plugin")
-	is.Equal(module2.Directory(), modCache.Directory("github.com/livebud", "bud-test-plugin@v0.0.8"))
+	is.Equal(module2.Directory(), modCache.Directory("github.com/livebud", "bud-test-plugin@v0.0.9"))
 }
 
 func TestOpen(t *testing.T) {
@@ -207,54 +213,6 @@ func TestOpen(t *testing.T) {
 	is.Equal(true, contains(des, "go.mod", "main.go"))
 }
 
-func TestFileCacheDir(t *testing.T) {
-	t.SkipNow()
-	is := is.New(t)
-	appDir := t.TempDir()
-	err := vfs.Write(appDir, vfs.Map{
-		"go.mod":  []byte(`module app.com`),
-		"main.go": []byte(`package main`),
-	})
-	is.NoErr(err)
-	fmap := fscache.New()
-	module, err := gomod.Find(appDir, gomod.WithFSCache(fmap))
-	is.NoErr(err)
-	// Check initial
-	des, err := fs.ReadDir(module, ".")
-	is.NoErr(err)
-	is.Equal(2, len(des))
-	is.Equal("go.mod", des[0].Name())
-	is.Equal("main.go", des[1].Name())
-	// Delete a file and check again to ensure it's cached
-	err = os.RemoveAll(filepath.Join(appDir, "main.go"))
-	is.NoErr(err)
-	des, err = fs.ReadDir(module, ".")
-	is.NoErr(err)
-	is.Equal(2, len(des))
-	is.Equal("go.mod", des[0].Name())
-	is.Equal("main.go", des[1].Name())
-	// Delete from the cache to see that it's been updated
-	fmap.Delete("main.go")
-	des, err = fs.ReadDir(module, ".")
-	is.NoErr(err)
-	is.Equal(1, len(des))
-	is.Equal("go.mod", des[0].Name())
-	// Create a file and see stale dir
-	err = os.WriteFile(filepath.Join(appDir, "main.go"), []byte(`package main`), 0644)
-	is.NoErr(err)
-	des, err = fs.ReadDir(module, ".")
-	is.NoErr(err)
-	is.Equal(1, len(des))
-	is.Equal("go.mod", des[0].Name())
-	// Mark the cache as creating main.go and see that it's been updated
-	fmap.Create("main.go")
-	des, err = fs.ReadDir(module, ".")
-	is.NoErr(err)
-	is.Equal(2, len(des))
-	is.Equal("go.mod", des[0].Name())
-	is.Equal("main.go", des[1].Name())
-}
-
 func TestModuleFindLocal(t *testing.T) {
 	is := is.New(t)
 	wd, err := os.Getwd()
@@ -262,7 +220,7 @@ func TestModuleFindLocal(t *testing.T) {
 	module1, err := gomod.Find(wd)
 	is.NoErr(err)
 	// Find local web directory within module1
-	module2, err := module1.Find(module1.Import("runtime", "web"))
+	module2, err := module1.Find(module1.Import("framework", "web"))
 	is.NoErr(err)
 	is.Equal(module1.Directory(), module2.Directory())
 }
@@ -289,13 +247,13 @@ func TestModuleFindFromFS(t *testing.T) {
 	is.Equal(module1.Directory("imagine"), absDir)
 }
 
-func TestDirFS(t *testing.T) {
+func TestSubFS(t *testing.T) {
 	is := is.New(t)
 	wd, err := os.Getwd()
 	is.NoErr(err)
 	module, err := gomod.Find(wd)
 	is.NoErr(err)
-	fsys := module.DirFS("internal")
+	fsys, err := fs.Sub(module, "internal")
 	is.NoErr(err)
 	des, err := fs.ReadDir(fsys, ".")
 	is.NoErr(err)
@@ -312,4 +270,49 @@ func TestHash(t *testing.T) {
 	m3, err := gomod.Parse("go.mod", []byte(`module apptest`))
 	is.NoErr(err)
 	is.True(string(m2.Hash()) != string(m3.Hash()))
+}
+
+func TestMissingModule(t *testing.T) {
+	is := is.New(t)
+	module, err := gomod.Parse("go.mod", []byte(`require github.com/evanw/esbuild v0.14.11`))
+	is.True(err != nil)
+	is.Equal(err.Error(), `mod: missing module statement in "go.mod", received "require github.com/evanw/esbuild v0.14.11\n"`)
+	is.Equal(module, nil)
+}
+
+func TestFindBy(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	td, err := testdir.Load()
+	is.NoErr(err)
+	td.Modules["github.com/livebud/bud-test-plugin"] = "v0.0.9"
+	td.Modules["github.com/livebud/bud-test-nested-plugin"] = "v0.0.5"
+	err = td.Write(ctx)
+	is.NoErr(err)
+	module, err := gomod.Find(td.Directory())
+	is.NoErr(err)
+	modules, err := module.FindBy(func(mod *gomod.Require) bool {
+		return strings.HasPrefix(path.Base(mod.Mod.Path), "bud-")
+	})
+	is.NoErr(err)
+	is.Equal(len(modules), 2)
+	is.Equal(modules[0].Import(), "github.com/livebud/bud-test-nested-plugin")
+	is.Equal(modules[1].Import(), "github.com/livebud/bud-test-plugin")
+}
+
+func TestNew(t *testing.T) {
+	is := is.New(t)
+	dir := t.TempDir()
+	module := gomod.New(dir)
+	is.Equal(dir, module.Directory())
+	is.Equal(module.Import(), "change.me")
+}
+
+func TestDeleteOutside(t *testing.T) {
+	is := is.New(t)
+	dir := t.TempDir()
+	is.NoErr(os.MkdirAll(filepath.Join(dir, "livebud", "bud"), 0755))
+	module := gomod.New(filepath.Join(dir, "livebud", "bud"))
+	err := module.RemoveAll("../..")
+	is.True(errors.Is(err, fs.ErrInvalid))
 }

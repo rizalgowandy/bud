@@ -17,16 +17,27 @@ type File struct {
 }
 
 // Import returns the module's import path (e.g. github.com/livebud/bud)
-func (f *File) Import(subpaths ...string) string {
-	return path.Join(append([]string{f.file.Module.Mod.Path}, subpaths...)...)
+func (f *File) Import(subPaths ...string) string {
+	modulePath := f.file.Module.Mod.Path
+	subPath := path.Join(subPaths...)
+	if modulePath == "std" {
+		return subPath
+	}
+	return path.Join(modulePath, subPath)
 }
 
 func (f *File) AddRequire(importPath, version string) error {
 	return f.file.AddRequire(importPath, version)
 }
 
-func (f *File) Replace(oldPath, newPath string) error {
-	return f.AddReplace(oldPath, "", newPath, "")
+// Replace finds a replaced package within go.mod or returns nil if not found.
+func (f *File) Replace(path string) *module.Version {
+	for _, rep := range f.file.Replace {
+		if rep.Old.Path == path {
+			return &rep.Old
+		}
+	}
+	return nil
 }
 
 func (f *File) AddReplace(oldPath, oldVers, newPath, newVers string) error {
@@ -36,9 +47,7 @@ func (f *File) AddReplace(oldPath, oldVers, newPath, newVers string) error {
 // Return a list of replaces
 func (f *File) Replaces() (reps []*Replace) {
 	reps = make([]*Replace, len(f.file.Replace))
-	for i, rep := range f.file.Replace {
-		reps[i] = rep
-	}
+	copy(reps, f.file.Replace)
 	// Consistent ordering regardless of modfile formatting
 	sort.Slice(reps, func(i, j int) bool {
 		return reps[i].Old.Path < reps[j].Old.Path
@@ -49,9 +58,7 @@ func (f *File) Replaces() (reps []*Replace) {
 // Return a list of requires
 func (f *File) Requires() (reqs []*Require) {
 	reqs = make([]*Require, len(f.file.Require))
-	for i, req := range f.file.Require {
-		reqs[i] = req
-	}
+	copy(reqs, f.file.Require)
 	// Consistent ordering regardless of modfile formatting
 	sort.Slice(reqs, func(i, j int) bool {
 		switch {

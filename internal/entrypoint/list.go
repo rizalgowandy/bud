@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/livebud/bud/internal/valid"
+	"github.com/livebud/bud/package/valid"
 
 	"github.com/matthewmueller/text"
 )
@@ -142,7 +142,7 @@ func listViews(fsys fs.FS, tree *tree, dir string) (views []*View, err error) {
 			views = append(views, subviews...)
 			continue
 		}
-		if !valid.ViewEntry(name) {
+		if !valid.View(name) {
 			continue
 		}
 		ext := path.Ext(name)
@@ -158,7 +158,7 @@ func listViews(fsys fs.FS, tree *tree, dir string) (views []*View, err error) {
 			Layout: tree.Layout(dir, ext),
 			Error:  tree.Error(dir, ext),
 			Type:   strings.TrimPrefix(ext, "."),
-			Hot:    true, // TODO: remove
+			Hot:    ":35729", // TODO: configurable
 		})
 	}
 	return views, nil
@@ -190,8 +190,8 @@ func route(dir, name string) string {
 		dir = ""
 	}
 	dir = routeDir(dir)
-	base := extless(name)
-	switch base {
+	action := extless(name)
+	switch action {
 	case "show":
 		return "/" + path.Join(dir, ":id")
 	case "new":
@@ -201,17 +201,17 @@ func route(dir, name string) string {
 	case "index":
 		return "/" + dir
 	default:
-		return "/" + path.Join(dir, text.Path(base))
+		return "/" + path.Join(dir, text.Lower(text.Snake(action)))
 	}
 }
 
 // The client path's entrypoint
 //
-//   e.g. view/index.jsx => bud/view/_index.jsx
+//	e.g. view/index.jsx => bud/view/_index.jsx
 //
 // We use the _ because this is a generated entrypoint
 // that
 func client(name string) string {
 	dir, path := filepath.Split(name)
-	return fmt.Sprintf("bud/%s_%s", dir, path)
+	return fmt.Sprintf("bud/%s_%s.js", dir, path)
 }

@@ -21,7 +21,7 @@ var _ Dependency = (*Struct)(nil)
 var _ Declaration = (*Struct)(nil)
 
 func (s *Struct) ID() string {
-	return `"` + s.Import + `".` + s.Type
+	return `'` + s.Import + `'.` + s.Type
 }
 
 func (s *Struct) ImportPath() string {
@@ -98,8 +98,7 @@ func (s *StructField) Find(finder Finder) (Declaration, error) {
 // Given the following dependency: Web, tryStruct will match on the
 // following functions:
 //
-//   type Web struct { ... }
-//
+//	type Web struct { ... }
 func tryStruct(stct *parser.Struct, dataType string) (*Struct, error) {
 	if stct.Private() {
 		return nil, ErrNoMatch
@@ -128,15 +127,15 @@ func tryStruct(stct *parser.Struct, dataType string) (*Struct, error) {
 		if gois.Builtin(ft.String()) {
 			return nil, ErrNoMatch
 		}
-		importPath, err := parser.ImportPath(ft)
-		if err != nil {
-			return nil, err
-		}
-		t := parser.Unqualify(ft)
 		def, err := field.Definition()
 		if err != nil {
 			return nil, err
 		}
+		importPath, err := def.Package().Import()
+		if err != nil {
+			return nil, err
+		}
+		t := parser.Unqualify(ft)
 		pkg := def.Package()
 		module := pkg.Module()
 		decl.Fields = append(decl.Fields, &StructField{

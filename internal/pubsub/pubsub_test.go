@@ -3,12 +3,12 @@ package pubsub_test
 import (
 	"testing"
 
+	"github.com/livebud/bud/internal/is"
 	"github.com/livebud/bud/internal/pubsub"
-	"github.com/matryer/is"
 	"golang.org/x/sync/errgroup"
 )
 
-func Test(t *testing.T) {
+func TestPubSub(t *testing.T) {
 	is := is.New(t)
 	ps := pubsub.New()
 	ps.Publish("toast", []byte("nothing to publish to yet"))
@@ -21,5 +21,27 @@ func Test(t *testing.T) {
 	})
 	ps.Publish("toast", []byte("toast is ready"))
 	is.NoErr(eg.Wait())
+	sub.Close()
+}
+
+func TestCloseTwice(t *testing.T) {
+	ps := pubsub.New()
+	sub := ps.Subscribe("toast")
+	sub.Close()
+	sub.Close()
+}
+
+func TestSubTwice(t *testing.T) {
+	ps := pubsub.New()
+	sub := ps.Subscribe("toast")
+	ps.Publish("toast", nil)
+	<-sub.Wait()
+	sub.Close()
+	sub = ps.Subscribe("toast")
+	select {
+	case <-sub.Wait():
+		t.Fatal("lingering event")
+	default:
+	}
 	sub.Close()
 }

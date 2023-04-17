@@ -6,6 +6,312 @@ Get the latest release of Bud by running the following in your terminal:
 curl -sf https://raw.githubusercontent.com/livebud/bud/main/install.sh | sh
 ```
 
+## Unreleased
+
+- Changed the CLI to use colon-based commands instead of space-based commands.
+
+  This is similar to how the Heroku CLI behaves. This has two advantages:
+
+  1. Clearer difference between args and commands.
+  2. Allows flags and args after the command to be in any order.
+
+- **Breaking:** As a result of the CLI change, `bud new controller` is now `bud new:controller`
+- **Breaking:** The `tool` subcommand has been dropped. For example, `bud tool fs cat` is now `bud fs:cat`.
+- **Deprecated:** `bud create <dir>` is now deprecated. Use `bud new <dir>` when you want to scaffold a new Bud project.
+
+## v0.2.8
+
+- Added beta support for `generator/` and `transpiler/` generators. Docs coming in a later release, but you can look at the tests for example usage if you're feeling adventurous.
+- Added better support for type aliases to dependency injection.
+- Fixed an issue where transition state between changes in the controller would
+  lead to the generated controller getting removed.
+
+## v0.2.7
+
+- Fixed a small regression in `bud create` (#360)
+
+## v0.2.6
+
+This is a very big release. From the outside, not much has changed, but the internals have been [almost entirely re-written](https://github.com/livebud/bud/pull/347).
+
+This feels like the right architecture for the next couple of years. You can expect smaller release cycles with more rigorous change logs going forward.
+
+Unfortunately I can't account for all the user-facing changes from this large release. I'm not aware of any breaking changes, but a lot of code shifted.
+
+Please give the upgrade a go and open an issue if you run into anything!
+
+## v0.2.5
+
+- Implement filesystem caching (#281)
+
+## v0.2.4
+
+- Partial support for auto-incrementing the port if already in use (#250)
+- Fix `staticcheck` problems and integrate into CI (#263)
+- Add support for Go 1.19 (#262)
+- `bud tool ...` now support `-C` chdir support (#255)
+- Auto infer module when `bud create` outside $GOPATH (#242) (thanks @012e!)
+- Add console.error, console.warn, setTimeout, setInterval, clearTimeout and clearInterval to V8 (#233)
+
+## v0.2.3
+
+- Fix regression in v0.2.2 where embedded files aren't available in the runtime package (#226)
+
+- Add simple E2E test in the Makefile to avoid issues regressions like this in the future.
+
+## v0.2.2
+
+- **BREAKING:** fix numerous protocol bugs between controllers and views (#203)
+
+  This was mostly around nested views. A lot of this was undocumented and so we finally started testing behaviors. You may need to adjust what your views export if you were heavily relying on nested controllers / views
+
+- Add scaffolding support for remaining controller actions: create, update, delete, edit & new (#203)
+
+  You can now call `bud new controller posts create update delete edit new show index` and scaffold all 7 controller actions.
+
+- Trigger full reloads on non-update events (#212)
+
+  Now if you rename, delete or add Svelte views, the watcher will pickup on these changes and trigger a reload.
+
+- Add support for method overriding in `<form>` tags (#203)
+
+  This allows you to submit PATCH, PUT and DELETE requests from forms using the `_method` parameter.
+
+  ```html
+  <form method="post" action={`/${post.id || 0}`}>
+    <input type="hidden" name="_method" value="patch">
+    <!-- Add input fields here -->
+    <input type="submit" value="Update Post" />
+  </form>
+  ```
+
+- Test that you can import Svelte files from node_modules (#221) thanks to @jfmario!
+
+  This release tested that you can indeed install and use Svelte components from the community like `svelte-time` and Bud will pick them up.
+
+- Support controllers that are named Index and Show (#214) thanks to @jfmario!
+
+  Prior to this release, you couldn't create a controller in `controller/index/controller.go` because it would conflict with the `Index` action. Now you can.
+
+- Escape props before hydrating (#200)
+
+  This allows you to pass raw HTML that could include a `<script>` tag as props into a Svelte view and have the rendering escaped.
+
+## v0.2.1
+
+- Fix typo in scaffolding .gitignore (#189)
+- Fix minor spelling in transform error output (#190) thanks to @jfmario
+- Add `Hoist` option to dependency injection framework so dependents of external parameters can still be eligible for hoisting (#192)
+
+## v0.2.0
+
+- Improve support for injecting request-specific dependencies (#181)
+
+  In v0.2.0, you can now create controller dependencies that have access to the request and response and are scoped to the request-response lifecycle.
+
+  ```go
+  package controller
+
+  // Flash is a session flash that could be in a separate package
+  type Flash struct {
+    Writer http.ResponseWriter
+  }
+
+  func (f *Flash) Set(msg string) {
+    http.Cookie(f.Writer, &http.Cookie{
+      Name: "flash",
+      Value: msg,
+    })
+  }
+
+  // Based on: https://www.alexedwards.net/blog/simple-flash-messages-in-golang
+  func (f *Flash) Get() string {
+    c, err := r.Cookie(name)
+    if err != nil {
+      return ""
+    }
+    http.SetCookie(f.Writer, &http.Cookie{
+      Name: name,
+      MaxAge: -1,
+      Expires: time.Unix(1, 0),
+    })
+    return c.Value
+  }
+
+  type Controller struct {
+    Flash *Flash
+  }
+
+  func (c *Controller) Create() (*User, error) {
+    // ... create the user
+    c.Flash.Set("Successfully created a user!")
+    return user, nil
+  }
+
+  func (c *Controller) Show(id int) (*Page, error) {
+    // ... load the user
+    page := &Page{
+      User: user,
+      Flash: c.Flash.Get()
+    }
+    return page, nil
+  }
+
+  // Note: in the future, there will be a way to access the flash from views
+  // without needing to pull it out and add it to your props.
+  // See: https://github.com/livebud/bud/pull/185 for more details.
+  type Page struct {
+    User *User
+    Flash string
+  }
+  ```
+
+  It may seem like if you had a database client within the `Session` it will be re-initialize the database for every request. This is not the case.
+
+  Dependency injection uses a technique called hoisting to avoid re-initiazation of dependencies that don't depend on the scoped parameters (in this case `*http.Request` and `http.ResponseWriter`).
+
+- Add rudimentary redirects on form submissions that have errors
+
+  Prior to this release, form errors would return a JSON response even if you submitted from an HTML page.
+
+  In this release, we now redirect back to the page that submitted the form. You don't yet have access to what failed. This will come in a future release.
+
+- Add `bud tool bs` for starting the local bud server
+
+  This is helpful for hacking on your generated bud files without the generators clobbering your changes. See [this section](https://github.com/livebud/bud/tree/main/contributing#disabling-code-generation) in the contributing guide for more details.
+
+- Use a more .gitignore compliant matcher.
+
+  The previous matcher just used globbing, but .gitignore has a more sophisticated way of ignoring files. For example `bud/` will ignore all inner files. This is something the previous matcher didn't understand.
+
+  This fixes some watch looping due to an unexpected failure to match a `.gitignore` line item.
+
+## v0.1.11
+
+- Fixed regression when using `bud new controller` (#173)
+
+## v0.1.10
+
+- Fix regression when running `bud create` outside of a `$GOPATH` (#167)
+- Fix cache clear before code generation to ensure there's no stale generated code. Prior to v0.1.10, we were clearing part of the cache not all of it (#168)
+- Allow explicit versions to be installed with `curl` by setting the `VERSION` environment variable (#168)
+
+## v0.1.9
+
+- Better hot reload DX with `bud run` (#131) thanks to @012e
+
+  Prior to v0.1.9, whenever a file change occurs it would rebuild and print a ready message if successful or an error message if unsuccessful. The ready messages would often clutter the terminal over time.
+
+  <a href="https://share.cleanshot.com/XCdkEnOr8BlCNgV035pu"><video src='https://share.cleanshot.com/XCdkEnOr8BlCNgV035pu/download' width='100%'/></a>
+
+- Large internal refactor (#133). The goals of this refactor:
+
+  1. Make it easier to understand. The double generated binary building was something that often confused me.
+  2. Make it easier to contribute. I'm so impressed with the contributions so far, with this refactor it should be even easier.
+  3. Make it faster during development. The slowest step in the build process is running `go build`. We now only run `go build` once on boot, not twice.
+
+  Learn more details [in this comment](https://github.com/livebud/bud/pull/133#issuecomment-1166371510). This PR concludes the work necessary to release [v0.2](https://github.com/livebud/bud/discussions/18).
+
+- Support glob embeds (#150) thanks to @vito
+
+  Build caching now understands embedded globs like `// go:embed *.sql`. You'll no longer get stale builds when changing a file within an embedded glob.
+
+- Improved Dockerfile in contributing (#140) thanks to @wheinze
+
+  The Dockerfile now supports passing Node and Go versions to build a custom container. It also uses a smaller base image.
+
+## v0.1.8
+
+- Support `func(w, r)` controller actions (#147) (thanks @vito!)
+
+  This release adds a highly-requested feature (atleast by me!) where you can now drop down to using the vanilla `http.HandlerFunc` signature.
+
+  This is a useful escape hatch for webhooks, streaming and other complex use cases.
+
+  ```go
+  package webhooks
+
+  type Controller struct {
+    GH *github.Client
+  }
+
+  func (c *Controller) Index() string {
+    return "GitHub webhook service!"
+  }
+
+  // Create handles incoming webhooks
+  func (c *Controller) Create(w http.ResponseWriter, r *http.Request) {
+    // Respond to the webhook using a vanilla HTTP handler function!
+  }
+  ```
+
+- Replace redirect with case-insensitive routing (#142) (thanks @vito!)
+
+  Prior to v0.1.8, if you defined the route `/bud`, but a user visited `/BUD`,
+  they would be redirected to `/bud`. This was originally done for SEO purposes to prevent different casing from appearing as separate pages.
+
+  However, this had an unfortunate side-effect in that you couldn't use parameters with mixed casing (e.g. base64 encoding).
+
+  In v0.1.8, we changed this so that URL routing is now case insensitive, so `/BUD` will run the `/bud` action. This doesn't address the SEO issue, but that will be a [follow-up task](https://github.com/livebud/bud/pull/142#issuecomment-1159824008) for a later time.
+
+## v0.1.7
+
+- Ensure alignment between CLI and runtime round 2 (#128)
+
+  In #126, we missed the case where the module wasn't downloaded yet. This version fixes that.
+
+## v0.1.6
+
+- Ensure alignment between CLI and runtime (#126)
+
+  In v0.1.5, we had a breaking change in the runtime. If you had an existing project and upgraded the CLI to v0.1.5, but you were still using the v0.1.4 runtime in go.mod, you'd encounter an error. This change automatically updates your go.mod to align with the CLI that's building it. Fixes: #125.
+
+## v0.1.5
+
+This release focuses on paying down some technical debt that was accumulated prior to the release. It's part of the [v0.2](https://github.com/livebud/bud/discussions/18) plan.
+
+- Rename `bud run [--port=<address>]` to `bud run [--listen=<address>]`
+
+  This **breaking change** addresses the confusion discussed in https://github.com/livebud/bud/discussions/42.
+
+- Rename `bud tool v8 client` to `bud tool v8 serve`
+
+  This **breaking change** gives a better name for what the command does, listen for eval requests, evaluate the javascript and return the response.
+
+- 204 No Content improvements (thanks @theEyeD!)
+
+  Now when controller don't have a return value or return a nil error, they return `204 No Content`. For example:
+
+  ```go
+  package users
+  type Controller struct {}
+  func (c *Controller) Create() error {
+    return nil
+  }
+  ```
+
+  ```sh
+  $ curl -X POST /users
+  HTTP/1.1 204 No Content
+  Content-Length: 0
+  ```
+
+- Dedupe and group watch events (#123)
+
+  This reduces the number of events the watcher triggers on Linux causing less builds to trigger at once. It also hopefully fixed an issue where "remove" events sometimes weren't triggering rebuilds on all platforms.
+
+- Improve CI (thanks @wheinze!) (#118)
+
+  Waldemar took a much needed pass over the CI. He cleaned up the file, fixed caching and extended the test matrix, so we can more confidently say what's required to use Bud.
+
+- Refactor, test and simplify the compiler (#93)
+
+  The compiler wasn't really tested prior to v0.1.4. Issue that would crop up would be discovered due to E2E tests. In v0.1.5, the compiler was refactored to be testable, then tested. It was also simplified to reduce the number of ways you could use it programmatically. This makes it less likely a test will pass but the end-to-end usage will fail.
+
+- Extend the error chain (#100)
+
+  Errors were being lost while merging the filesystems for plugins. Now errors that occur in generators will be extended through the merged filesystem, so it's easier to see when there are issues in the generators
+
 ## v0.1.4
 
 - Add support for custom actions (thanks @theEyeD!)

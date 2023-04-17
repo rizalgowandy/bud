@@ -1,21 +1,24 @@
 package parser_test
 
 import (
-	"os"
+	"context"
+	"path"
 	"path/filepath"
 	"testing"
 
-	"github.com/livebud/bud/package/conjure"
-	"github.com/livebud/bud/package/merged"
+	"github.com/livebud/bud/internal/dag"
+	"github.com/livebud/bud/package/genfs"
+	"github.com/livebud/bud/package/log/testlog"
+	"github.com/livebud/bud/package/virtual"
 
 	"github.com/livebud/bud/package/modcache"
 	"github.com/livebud/bud/package/parser"
 
-	"github.com/livebud/bud/internal/testdir"
+	"github.com/livebud/bud/internal/is"
 	"github.com/livebud/bud/internal/txtar"
 	"github.com/livebud/bud/package/gomod"
+	"github.com/livebud/bud/package/testdir"
 	"github.com/livebud/bud/package/vfs"
-	"github.com/matryer/is"
 )
 
 // TODO: replace txtar with testdir
@@ -149,8 +152,9 @@ func TestAliasLookup(t *testing.T) {
 
 func TestNetHTTP(t *testing.T) {
 	is := is.New(t)
-	dir := t.TempDir()
-	td := testdir.New()
+	ctx := context.Background()
+	td, err := testdir.Load()
+	is.NoErr(err)
 	td.Files["app.go"] = `
 		package app
 
@@ -160,9 +164,9 @@ func TestNetHTTP(t *testing.T) {
 			*http.Request
 		}
 	`
-	err := td.Write(dir)
+	err = td.Write(ctx)
 	is.NoErr(err)
-	module, err := gomod.Find(dir)
+	module, err := gomod.Find(td.Directory())
 	is.NoErr(err)
 	p := parser.New(module, module)
 	pkg, err := p.Parse(".")
@@ -179,7 +183,7 @@ func TestNetHTTP(t *testing.T) {
 	pkg = def.Package()
 	imp, err := pkg.Import()
 	is.NoErr(err)
-	is.Equal(imp, "std/net/http")
+	is.Equal(imp, "net/http")
 	stct = def.Package().Struct("Request")
 	is.True(stct != nil)
 	is.Equal(stct.Name(), "Request")
@@ -187,13 +191,14 @@ func TestNetHTTP(t *testing.T) {
 
 func TestGenerate(t *testing.T) {
 	is := is.New(t)
-	dir := t.TempDir()
-	td := testdir.New()
+	ctx := context.Background()
+	log := testlog.New()
+	td, err := testdir.Load()
+	is.NoErr(err)
 	td.Modules["github.com/livebud/bud-test-plugin"] = `v0.0.8`
-	is.NoErr(td.Write(dir))
-	cfs := conjure.New()
-	merged := merged.Merge(os.DirFS(dir), cfs)
-	cfs.GenerateFile("hello/hello.go", func(file *conjure.File) error {
+	is.NoErr(td.Write(ctx))
+	fsys := genfs.New(dag.Discard, td, log)
+	fsys.GenerateFile("hello/hello.go", func(fsys genfs.FS, file *genfs.File) error {
 		file.Data = []byte(`
 			package hello
 			import plugin "github.com/livebud/bud-test-plugin"
@@ -201,10 +206,9 @@ func TestGenerate(t *testing.T) {
 		`)
 		return nil
 	})
-	module, err := gomod.Find(dir)
+	module, err := gomod.Find(td.Directory())
 	is.NoErr(err)
-	is.Equal(module.Directory(), dir)
-	p := parser.New(merged, module)
+	p := parser.New(fsys, module)
 	// Parse a virtual package
 	pkg, err := p.Parse("hello")
 	is.NoErr(err)
@@ -238,4 +242,61 @@ func TestGenerate(t *testing.T) {
 	alias = pkg.Alias("Answer")
 	is.True(alias != nil)
 	is.Equal(alias.Name(), "Answer")
+}
+
+func TestAliasLookupModule(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	td, err := testdir.Load()
+	is.NoErr(err)
+	budModule, err := gomod.Find(".")
+	is.NoErr(err)
+	dep := budModule.File().Require("github.com/livebud/transpiler")
+	td.Modules["github.com/livebud/transpiler"] = dep.Version
+	is.NoErr(td.Write(ctx))
+	module, err := gomod.Find(td.Directory())
+	is.NoErr(err)
+	fsys := virtual.Tree{
+		"bud/transpiler/transpiler.go": &virtual.File{Data: []byte(`
+			package transpiler
+			import "app.com/runtime/transpiler"
+			func New(tr *transpiler.Transpiler) {}
+		`)},
+		"runtime/transpiler/transpiler.go": &virtual.File{Data: []byte(`
+			package transpiler
+			import "github.com/livebud/transpiler"
+			type Transpiler = transpiler.Transpiler
+		`)},
+	}
+	p := parser.New(fsys, module)
+	pkg, err := p.Parse("bud/transpiler")
+	is.NoErr(err)
+	is.Equal(pkg.Name(), "transpiler")
+	newFn := pkg.Function("New")
+	is.True(newFn != nil)
+	params := newFn.Params()
+	is.Equal(len(params), 1)
+	is.Equal(params[0].Name(), "tr")
+	def, err := params[0].Definition()
+	is.NoErr(err)
+	is.Equal(def.Name(), "Transpiler")
+	is.Equal(def.Kind(), parser.KindStruct)
+	pkg = def.Package()
+	is.Equal(pkg.Name(), "transpiler")
+	importPath, err := pkg.Import()
+	is.NoErr(err)
+	is.Equal(importPath, "app.com/runtime/transpiler")
+	alias := def.Package().Alias("Transpiler")
+	is.True(alias != nil)
+	is.Equal(alias.Name(), "Transpiler")
+	def, err = alias.Definition()
+	is.NoErr(err)
+	is.Equal(def.Name(), "Transpiler")
+	is.Equal(def.Kind(), parser.KindStruct)
+	pkg = def.Package()
+	is.Equal(pkg.Name(), "transpiler")
+	importPath, err = pkg.Import()
+	is.NoErr(err)
+	is.Equal(importPath, "github.com/livebud/transpiler")
+	is.Equal(pkg.Directory(), path.Join(module.ModCache(), "github.com/livebud/transpiler@"+dep.Version))
 }

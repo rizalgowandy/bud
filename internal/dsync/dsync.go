@@ -4,9 +4,11 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"time"
 
-	"github.com/livebud/bud/internal/dsync/set"
+	"github.com/livebud/bud/package/log"
 	"github.com/livebud/bud/package/vfs"
 )
 
@@ -14,7 +16,8 @@ type skipFunc = func(name string, isDir bool) bool
 
 type option struct {
 	Skip skipFunc
-	rel  func(path string) (string, error)
+	log  log.Log
+	rel  func(spath string) (string, error)
 }
 
 type Option func(o *option)
@@ -30,6 +33,12 @@ func WithSkip(skips ...skipFunc) Option {
 	}
 }
 
+func WithLog(log log.Log) Option {
+	return func(o *option) {
+		o.log = log
+	}
+}
+
 func composeSkips(skips []skipFunc) skipFunc {
 	return func(name string, isDir bool) bool {
 		for _, skip := range skips {
@@ -42,8 +51,8 @@ func composeSkips(skips []skipFunc) skipFunc {
 }
 
 func Rel(sdir, tdir string) func(path string) (string, error) {
-	return func(path string) (string, error) {
-		rel, err := filepath.Rel(sdir, path)
+	return func(spath string) (string, error) {
+		rel, err := filepath.Rel(sdir, spath)
 		if err != nil {
 			return "", err
 		}
@@ -56,17 +65,27 @@ func Rel(sdir, tdir string) func(path string) (string, error) {
 func Dir(sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir string, options ...Option) error {
 	opt := &option{
 		Skip: func(name string, isDir bool) bool { return false },
+		log:  log.Discard,
 		rel:  Rel(sdir, tdir),
 	}
 	for _, option := range options {
 		option(opt)
 	}
+	opt.log = opt.log.Field("package", "dsync")
+	opt.log.Debug("syncing")
+	now := time.Now()
 	ops, err := diff(opt, sfs, sdir, tfs, tdir)
 	if err != nil {
 		return err
 	}
-	err = apply(sfs, tfs, ops)
+	err = apply(opt, sfs, tfs, ops)
+	opt.log.Field("duration", time.Since(now)).Debug("synced")
 	return err
+}
+
+// To syncs the "to" directory from the source to target filesystem
+func To(sfs fs.FS, tfs vfs.ReadWritable, to string, options ...Option) error {
+	return Dir(sfs, to, tfs, to, options...)
 }
 
 type OpType uint8
@@ -100,7 +119,42 @@ func (o Op) String() string {
 	return o.Type.String() + ":" + o.Path
 }
 
+func newSet(des []fs.DirEntry) set {
+	s := make(set, len(des))
+	for _, de := range des {
+		s[de.Name()] = de
+	}
+	return s
+}
+
+type set map[string]fs.DirEntry
+
+func (source set) Difference(target set) (des []fs.DirEntry) {
+	for name, de := range source {
+		if _, ok := target[name]; !ok {
+			des = append(des, de)
+		}
+	}
+	sort.Slice(des, func(i, j int) bool {
+		return des[i].Name() < des[j].Name()
+	})
+	return des
+}
+
+func (source set) Intersection(target set) (des []fs.DirEntry) {
+	for name, de := range source {
+		if _, ok := target[name]; ok {
+			des = append(des, de)
+		}
+	}
+	sort.Slice(des, func(i, j int) bool {
+		return des[i].Name() < des[j].Name()
+	})
+	return des
+}
+
 func diff(opt *option, sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir string) (ops []Op, err error) {
+	log := opt.log.Field("fn", "diff")
 	sourceEntries, err := fs.ReadDir(sfs, sdir)
 	if err != nil {
 		return nil, err
@@ -109,26 +163,32 @@ func diff(opt *option, sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir string
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	sourceSet := set.New(sourceEntries...)
-	targetSet := set.New(targetEntries...)
-	creates := set.Difference(sourceSet, targetSet)
-	deletes := set.Difference(targetSet, sourceSet)
-	updates := set.Intersection(sourceSet, targetSet)
-	createOps, err := createOps(opt, sfs, sdir, creates.List())
+	// Create the source set from the source entries
+	sourceSet := newSet(sourceEntries)
+	// Create a target set from the target entries
+	targetSet := newSet(targetEntries)
+	// Compute the operations
+	creates := sourceSet.Difference(targetSet)
+	deletes := targetSet.Difference(sourceSet)
+	updates := sourceSet.Intersection(targetSet)
+	createOps, err := createOps(opt, sfs, sdir, creates)
 	if err != nil {
 		return nil, err
 	}
-	deleteOps, err := deleteOps(opt, sdir, deletes.List())
+	deleteOps, err := deleteOps(opt, sdir, deletes)
 	if err != nil {
 		return nil, err
 	}
-	childOps, err := updateOps(opt, sfs, sdir, tfs, tdir, updates.List())
+	childOps, err := updateOps(opt, sfs, sdir, tfs, tdir, updates)
 	if err != nil {
 		return nil, err
 	}
 	ops = append(ops, createOps...)
 	ops = append(ops, deleteOps...)
 	ops = append(ops, childOps...)
+	for _, op := range ops {
+		log.Debug("op:", op.Type, op.Path)
+	}
 	return ops, nil
 }
 
@@ -159,6 +219,10 @@ func createOps(opt *option, sfs fs.FS, dir string, des []fs.DirEntry) (ops []Op,
 		}
 		des, err := fs.ReadDir(sfs, path)
 		if err != nil {
+			// Ignore ReadDir that fail when the path doesn't exist
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			return nil, err
 		}
 		createOps, err := createOps(opt, sfs, path, des)
@@ -195,13 +259,14 @@ func updateOps(opt *option, sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir s
 		if de.Name() == "." {
 			continue
 		}
-		path := filepath.Join(sdir, de.Name())
-		if opt.Skip(path, de.IsDir()) {
+		spath := filepath.Join(sdir, de.Name())
+		if opt.Skip(spath, de.IsDir()) {
 			continue
 		}
+		tpath := filepath.Join(tdir, de.Name())
 		// Recurse directories
 		if de.IsDir() {
-			childOps, err := diff(opt, sfs, path, tfs, path)
+			childOps, err := diff(opt, sfs, spath, tfs, tpath)
 			if err != nil {
 				return nil, err
 			}
@@ -209,11 +274,11 @@ func updateOps(opt *option, sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir s
 			continue
 		}
 		// Otherwise, check if the file has changed
-		sourceStamp, err := stamp(sfs, path)
+		sourceStamp, err := stamp(sfs, spath)
 		if err != nil {
 			return nil, err
 		}
-		targetStamp, err := stamp(tfs, path)
+		targetStamp, err := stamp(tfs, tpath)
 		if err != nil {
 			return nil, err
 		}
@@ -221,16 +286,18 @@ func updateOps(opt *option, sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir s
 		if sourceStamp == targetStamp {
 			continue
 		}
-		data, err := fs.ReadFile(sfs, path)
+		rel, err := opt.rel(spath)
+		if err != nil {
+			return nil, err
+		}
+		data, err := fs.ReadFile(sfs, spath)
 		if err != nil {
 			// Don't error out on files that don't exist
 			if errors.Is(err, fs.ErrNotExist) {
+				// The file no longer exists, delete it
+				ops = append(ops, Op{DeleteType, rel, nil})
 				continue
 			}
-			return nil, err
-		}
-		rel, err := opt.rel(path)
-		if err != nil {
 			return nil, err
 		}
 		ops = append(ops, Op{UpdateType, rel, data})
@@ -238,10 +305,12 @@ func updateOps(opt *option, sfs fs.FS, sdir string, tfs vfs.ReadWritable, tdir s
 	return ops, nil
 }
 
-func apply(sfs fs.FS, tfs vfs.ReadWritable, ops []Op) error {
+func apply(opt *option, sfs fs.FS, tfs vfs.ReadWritable, ops []Op) error {
+	log := opt.log.Field("fn", "apply")
 	for _, op := range ops {
 		switch op.Type {
 		case CreateType:
+			log.Debug("creating", op.Path)
 			dir := filepath.Dir(op.Path)
 			if err := tfs.MkdirAll(dir, 0755); err != nil {
 				return err
@@ -250,10 +319,12 @@ func apply(sfs fs.FS, tfs vfs.ReadWritable, ops []Op) error {
 				return err
 			}
 		case UpdateType:
+			log.Debug("updating", op.Path)
 			if err := tfs.WriteFile(op.Path, op.Data, 0644); err != nil {
 				return err
 			}
 		case DeleteType:
+			log.Debug("removing", op.Path)
 			if err := tfs.RemoveAll(op.Path); err != nil {
 				return err
 			}

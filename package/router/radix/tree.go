@@ -110,7 +110,8 @@ func (t *tree) Insert(route string, handler http.Handler) error {
 
 // strip token trail removes path tokens up to either a slot or a slash
 // e.g. /:id. => /:id
-//      /a/b => /a
+//
+//	/a/b => /a
 func stripTokenTrail(tokens lex.Tokens) lex.Tokens {
 	i := len(tokens) - 1
 loop:
@@ -176,14 +177,9 @@ func (t *tree) insertAt(parent *node, tokens lex.Tokens, route string, handler h
 		parent.route = ""
 		return nil
 	}
-	// This set of tokens are already in the tree
-	// E.g. We've inserted "/a", "/b", then "/". "/" will already be in the tree
-	// but not have a handler
+	// This set of tokens are already in the tree. Override any prior handler if
+	// there was one.
 	if inTreeAlready {
-		// Error out if we have a handler that's exactly the same as another route
-		if parent.handler != nil {
-			return fmt.Errorf("radix: %q is already in the tree", route)
-		}
 		parent.handler = handler
 		parent.route = route
 		return nil
@@ -318,12 +314,10 @@ func matchExact(token lex.Token) matchFn {
 		if len(path) < rlen {
 			return -1, nil
 		}
-		for ; index < rlen; index++ {
-			if path[index] != route[index] {
-				return -1, nil
-			}
+		if !strings.EqualFold(path[:rlen], route) {
+			return -1, nil
 		}
-		return index, nil
+		return rlen, nil
 	}
 }
 

@@ -1,5 +1,6 @@
 BUD_VERSION := $(shell cat version.txt)
 
+default: install
 precommit: test.dev
 
 ##
@@ -10,6 +11,8 @@ install:
 	go mod tidy
 	npm install
 	(cd livebud && npm install)
+	$(MAKE) go.tools
+	$(MAKE) go.generate
 
 ##
 # Examples
@@ -34,8 +37,8 @@ example.scratch.watch:
 	@ watch -- $(MAKE) example.scratch
 
 example.hn:
-	@ (cd example/hn && npm link ../../livebud)
-	@ go run main.go -C example/hn run
+	@ # (cd example/hn && npm link ../../livebud)
+	@ go run main.go -log=debug -C example/hn generate
 
 example.hn.embed:
 	@ (cd example/hn && npm link ../../livebud)
@@ -50,7 +53,7 @@ example.hn.watch:
 # Go
 ##
 
-GO_SOURCE := ./internal/... ./package/... ./runtime/...
+GO_SOURCE := ./internal/... ./package/... ./framework/...
 
 go.tools:
 	@ go install \
@@ -75,10 +78,13 @@ go.vet:
 go.fmt:
 	@ test -z "$(shell go fmt $(GO_SOURCE))"
 
+go.staticcheck:
+	@ go run honnef.co/go/tools/cmd/staticcheck@2023.1 $(GO_SOURCE)
+
 go.install:
 	@ go build --trimpath \
 		--ldflags="-s -w \
-			-X 'github.com/livebud/bud/internal/version.Bud=latest' \
+			-X 'github.com/livebud/bud/internal/versions.Bud=latest' \
 		" \
 		-o /usr/local/bin/bud \
 		.
@@ -91,7 +97,7 @@ go.build.darwin.amd64:
 		--out=bud \
 		--trimpath \
 		--ldflags="-s -w \
-			-X 'github.com/livebud/bud/internal/version.Bud=$(BUD_VERSION)' \
+			-X 'github.com/livebud/bud/internal/versions.Bud=$(BUD_VERSION)' \
 		" \
 		./ 1> /dev/null
 	@ mkdir -p release/bud_v$(BUD_VERSION)_darwin_amd64
@@ -108,7 +114,7 @@ go.build.darwin.arm64:
 		--out=bud \
 		--trimpath \
 		--ldflags="-s -w \
-			-X 'github.com/livebud/bud/internal/version.Bud=$(BUD_VERSION)' \
+			-X 'github.com/livebud/bud/internal/versions.Bud=$(BUD_VERSION)' \
 		" \
 		./ 1> /dev/null
 	@ mkdir -p release/bud_v$(BUD_VERSION)_darwin_arm64
@@ -124,7 +130,7 @@ go.build.linux:
 		--out=bud \
 		--trimpath \
 		--ldflags="-s -w \
-			-X 'github.com/livebud/bud/internal/version.Bud=$(BUD_VERSION)' \
+			-X 'github.com/livebud/bud/internal/versions.Bud=$(BUD_VERSION)' \
 		" \
 		./ 1> /dev/null
 	@ mkdir -p release/bud_v$(BUD_VERSION)_linux_amd64
@@ -145,7 +151,7 @@ go.build.windows:
 		--out=bud \
 		--trimpath \
 		--ldflags="-s -w \
-			-X 'github.com/livebud/bud/internal/version.Bud=$(BUD_VERSION)' \
+			-X 'github.com/livebud/bud/internal/versions.Bud=$(BUD_VERSION)' \
 		" \
 		./ 1> /dev/null
 
@@ -167,18 +173,19 @@ budjs.test:
 ##
 
 test: test.dev
-test.dev: go.tools go.generate go.fmt go.vet budjs.check budjs.test go.test
-test.all: go.tools go.generate go.fmt go.vet budjs.check budjs.test go.test
+test.dev: go.tools go.generate go.fmt go.vet go.staticcheck budjs.check budjs.test go.test
+test.all: go.tools go.generate go.vet go.staticcheck budjs.check budjs.test go.test
 
 ##
 # CI
 ##
+ci.test: go.tools go.generate go.vet budjs.check budjs.test go.test
 
 ci.npm:
 	@ npm ci
 
-ci.macos: test.all
-ci.ubuntu: test.all
+ci.macos: ci.test e2e
+ci.ubuntu: ci.test e2e
 
 ##
 # Build
@@ -237,3 +244,26 @@ publish:
 	@ echo "Publishing the release on Github"
 	@ git push origin main "v$(BUD_VERSION)"
 	@ gh release create --notes-file=release/changelog.md "v$(BUD_VERSION)" release/bud_* release/checksums.txt
+
+sanity:
+	@ echo "Running post-release sanity test..."
+	@ go test --ldflags="-s -w -X 'github.com/livebud/bud/internal/versions.Bud=$(BUD_VERSION)'" \
+		./internal/cli/create_test.go -run "TestReleaseVersionOk"
+
+##
+# E2E
+##
+
+e2e: e2e.bud.build
+
+e2e.bud.build:
+	@ echo "e2e: running `bud build`"
+	go build -o bud main.go
+	git clone https://github.com/livebud/welcome
+	( cd welcome && \
+		npm install && \
+		go mod edit -replace="github.com/livebud/bud=../" && \
+		go mod tidy \
+	)
+	./bud -C welcome build
+	./welcome/bud/app -h

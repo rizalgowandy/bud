@@ -9,13 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/livebud/bud/internal/fscache"
+	"github.com/livebud/bud/internal/current"
 	"github.com/livebud/bud/package/modcache"
+	"github.com/livebud/bud/package/virtual"
 	"golang.org/x/mod/modfile"
 )
-
-// ErrCantInfer occurs when you can't infer the module path from the $GOPATH.
-var ErrCantInfer = errors.New("mod: unable to infer the module path")
 
 // ErrFileNotFound occurs when no go.mod can be found
 var ErrFileNotFound = fmt.Errorf("unable to find go.mod: %w", fs.ErrNotExist)
@@ -24,7 +22,6 @@ type Option = func(o *option)
 
 type option struct {
 	modCache *modcache.Cache
-	fsCache  *fscache.Cache // can be nil
 }
 
 // WithModCache uses a custom mod cache instead of the default
@@ -34,17 +31,9 @@ func WithModCache(cache *modcache.Cache) func(o *option) {
 	}
 }
 
-// WithFileCache uses a file cache
-func WithFSCache(cache *fscache.Cache) func(o *option) {
-	return func(opt *option) {
-		opt.fsCache = cache
-	}
-}
-
 func Find(dir string, options ...Option) (*Module, error) {
 	opt := &option{
 		modCache: modcache.Default(),
-		fsCache:  nil,
 	}
 	for _, option := range options {
 		option(opt)
@@ -59,7 +48,7 @@ func Find(dir string, options ...Option) (*Module, error) {
 func find(opt *option, dir string) (*Module, error) {
 	moduleDir, err := Absolute(dir)
 	if err != nil {
-		return nil, fmt.Errorf("%w in %q", ErrFileNotFound, dir)
+		return nil, fmt.Errorf("module: %q %w", dir, ErrFileNotFound)
 	}
 	modulePath := filepath.Join(moduleDir, "go.mod")
 	moduleData, err := os.ReadFile(modulePath)
@@ -67,6 +56,15 @@ func find(opt *option, dir string) (*Module, error) {
 		return nil, err
 	}
 	return parse(opt, modulePath, moduleData)
+}
+
+// MustFind is like Find but panics if an error occurs
+func MustFind(dir string, options ...Option) *Module {
+	module, err := Find(dir, options...)
+	if err != nil {
+		panic(err)
+	}
+	return module
 }
 
 // Infer the module path from the $GOPATH. This only works if you work inside
@@ -86,6 +84,24 @@ func Parse(path string, data []byte, options ...Option) (*Module, error) {
 	return parse(opt, path, data)
 }
 
+func New(dir string, options ...Option) *Module {
+	opt := &option{
+		modCache: modcache.Default(),
+	}
+	for _, option := range options {
+		option(opt)
+	}
+	modulePath := modulePathFromGoPath(dir)
+	if modulePath == "" {
+		modulePath = "change.me"
+	}
+	module, err := parse(opt, filepath.Join(dir, "go.mod"), []byte(`module `+modulePath))
+	if err != nil {
+		panic("mod: invalid module data: " + err.Error())
+	}
+	return module
+}
+
 // gopathToModulePath tries inferring the module path of directory. This only
 // works if you're in working within the $GOPATH
 func modulePathFromGoPath(path string) string {
@@ -102,12 +118,15 @@ func parse(opt *option, path string, data []byte) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	if modfile.Module == nil {
+		modFile, err := modfile.Format()
+		if err != nil {
+			return nil, fmt.Errorf("mod: missing module statement in %q and got an error while formatting %s", path, err)
+		}
+		return nil, fmt.Errorf("mod: missing module statement in %q, received %q", path, string(modFile))
+	}
 	dir := filepath.Dir(path)
-	return &Module{
-		opt:  opt,
-		file: &File{modfile},
-		dir:  dir,
-	}, nil
+	return &Module{opt, &File{modfile}, dir, virtual.OS(dir)}, nil
 }
 
 // Absolute traverses up the filesystem until it finds a directory
@@ -118,6 +137,15 @@ func Absolute(dir string) (abs string, err error) {
 		return "", err
 	}
 	return filepath.Abs(dir)
+}
+
+// FindBudModule finds the go.mod for bud itself
+func FindBudModule() (*Module, error) {
+	dirname, err := current.Directory()
+	if err != nil {
+		return nil, err
+	}
+	return Find(dirname)
 }
 
 func absolute(dir string) (abs string, err error) {
@@ -133,5 +161,5 @@ func absolute(dir string) (abs string, err error) {
 		}
 		return absolute(filepath.Dir(dir))
 	}
-	return dir, nil
+	return filepath.EvalSymlinks(dir)
 }

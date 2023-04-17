@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"unicode"
 
 	"github.com/livebud/bud/package/router/radix"
 )
@@ -32,6 +31,16 @@ func (rt *Router) Add(method, route string, handler http.Handler) error {
 }
 
 func (rt *Router) add(method, route string, handler http.Handler) error {
+	if route == "/" {
+		return rt.insert(method, route, handler)
+	}
+	// Trim any trailing slash and lowercase the route
+	route = strings.TrimRight(strings.ToLower(route), "/")
+	return rt.insert(method, route, handler)
+}
+
+// Insert the route into the method's radix tree
+func (rt *Router) insert(method, route string, handler http.Handler) error {
 	if _, ok := rt.methods[method]; !ok {
 		rt.methods[method] = radix.New()
 	}
@@ -76,24 +85,8 @@ func (rt *Router) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Redirect for trailing slashes or paths with uppercase letters
-		urlPath := r.URL.Path
-		redirect := false
 		// Strip any trailing slash (e.g. /users/ => /users)
-		if hasTrailingSlash(urlPath) {
-			urlPath = strings.TrimRight(urlPath, "/")
-			redirect = true
-		}
-		// Ensure that all paths are case-insensitive (e.g. /USERS => /users)
-		if hasUpper(urlPath) {
-			urlPath = strings.ToLower(urlPath)
-			redirect = true
-		}
-		// Redirect all at once, instead of for each rule
-		if redirect {
-			http.Redirect(w, r, strings.ToLower(urlPath), http.StatusPermanentRedirect)
-			return
-		}
+		urlPath := trimTrailingSlash(r.URL.Path)
 		// Match the path
 		match, ok := tree.Match(urlPath)
 		if !ok {
@@ -113,17 +106,11 @@ func (rt *Router) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-func hasTrailingSlash(path string) bool {
-	return path != "/" && strings.HasSuffix(path, "/")
-}
-
-func hasUpper(path string) bool {
-	for _, r := range path {
-		if unicode.IsUpper(r) {
-			return true
-		}
+func trimTrailingSlash(path string) string {
+	if path == "/" {
+		return path
 	}
-	return false
+	return strings.TrimRight(path, "/")
 }
 
 // isMethod returns true if method is a valid HTTP method

@@ -1,36 +1,30 @@
 package hot
 
 import (
-	"context"
+	"bytes"
 	"fmt"
-	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/livebud/bud/runtime/web"
-
 	"github.com/livebud/bud/internal/pubsub"
+	"github.com/livebud/bud/package/log"
 )
 
-func New() *Server {
-	return &Server{pubsub.New()}
+// New server-sent event (SSE) server
+func New(log log.Log, ps pubsub.Subscriber) *Server {
+	return &Server{log, ps, time.Now}
 }
 
 type Server struct {
-	ps pubsub.Client
+	log log.Log
+	ps  pubsub.Subscriber
+	Now func() time.Time // Used for testing
 }
 
-func (s *Server) Reload(path string) {
-	s.ps.Publish(path, nil)
-}
-
-// Start listening on addr
-func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	return web.Serve(ctx, listener, s)
+func pagePath(url string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(url, "/bud/hot"), "/")
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -50,30 +44,79 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Flush the headers
 	flusher.Flush()
 	// Subscribe to a specific page path or all pages
-	pagePath := r.URL.Query().Get("page")
-	topics := []string{"*"}
+	topics := []string{"frontend:update"}
+	pagePath := pagePath(r.URL.Path)
 	if pagePath != "" {
-		topics = append(topics, pagePath[1:])
+		topics = append(topics, `frontend:update:`+pagePath)
 	}
 	subscription := s.ps.Subscribe(topics...)
+	s.log.Fields(log.Fields{"topics": topics}).Debug("hot: subscribed to topics")
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case topic := <-subscription.Wait():
-			_ = topic
-			payload := fmt.Sprintf("data: {\"scripts\":[%q]}\n\n", fmt.Sprintf("%s?ts=%d", pagePath, time.Now().UnixMilli()))
-			w.Write([]byte(payload))
+		case <-subscription.Wait():
+			s.log.Fields(log.Fields{
+				"topic": "frontend:update",
+				"page":  pagePath,
+			}).Debug("hot: got event")
+			if pagePath == "" {
+				s.log.Debug("hot: full reload")
+				reload(flusher, w)
+				continue
+			}
+			// Add /bud/ because we'll be requesting a generated file
+			scriptPath := fmt.Sprintf("%s?ts=%d", "/bud/"+pagePath, s.Now().UnixMilli())
+			event := &Event{
+				Data: []byte(fmt.Sprintf(`{"scripts":[%q]}`, scriptPath)),
+			}
+			w.Write(event.Format().Bytes())
 			flusher.Flush()
 
-		// TODO: rethink this, this was just the easiest way I could think of to add
-		// full-reloading. Using the exclamation point so it doesn't conflict with a
-		// file path
-		case <-s.ps.Subscribe("!").Wait():
-			payload := fmt.Sprintf("data: {\"reload\":true}\n\n")
-			w.Write([]byte(payload))
-			flusher.Flush()
+		// TODO: Create a new event type. EventSourcing has a concept of event types
+		// which can be differentiated by the browser.
+		//
+		// See: https://html.spec.whatwg.org/multipage/server-sent-events.html#server-sent-events-intro
+		case <-s.ps.Subscribe("backend:update").Wait():
+			s.log.Fields(log.Fields{"topic": "page:reload"}).Debug("hot: got event")
+			reload(flusher, w)
 		}
 	}
+}
+
+func reload(flusher http.Flusher, w http.ResponseWriter) {
+	event := &Event{
+		Data: []byte(`{"reload":true}`),
+	}
+	w.Write(event.Format().Bytes())
+	flusher.Flush()
+}
+
+// https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
+type Event struct {
+	ID    string // id (optional)
+	Type  string // event type (optional)
+	Data  []byte // data
+	Retry int    // retry (optional)
+}
+
+func (e *Event) Format() *bytes.Buffer {
+	b := new(bytes.Buffer)
+	if e.ID != "" {
+		b.WriteString("id: " + e.ID + "\n")
+	}
+	if e.Type != "" {
+		b.WriteString("event: " + e.Type + "\n")
+	}
+	if len(e.Data) > 0 {
+		b.WriteString("data: ")
+		b.Write(e.Data)
+		b.WriteByte('\n')
+	}
+	if e.Retry > 0 {
+		b.WriteString("retry: " + strconv.Itoa(e.Retry) + "\n")
+	}
+	b.WriteByte('\n')
+	return b
 }

@@ -2,13 +2,13 @@ package router_test
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/livebud/bud/internal/is"
 	"github.com/livebud/bud/package/router"
-	"github.com/matryer/is"
 )
 
 type test struct {
@@ -41,6 +41,7 @@ func handler(route string) http.Handler {
 
 func ok(t testing.TB, test *test) {
 	is := is.New(t)
+	is.Helper()
 	router := router.New()
 	for _, route := range test.routes {
 		if route.method == "" {
@@ -82,7 +83,7 @@ func ok(t testing.TB, test *test) {
 			fmt.Println("location", url.Path)
 			is.Equal(request.location, url.Path)
 		}
-		body, err := ioutil.ReadAll(res.Body)
+		body, err := io.ReadAll(res.Body)
 		is.NoErr(err)
 		is.Equal(request.body, string(body))
 	}
@@ -171,27 +172,38 @@ func TestTrailingSlash(t *testing.T) {
 	ok(t, &test{
 		routes: []*route{
 			{method: "GET", route: "/"},
-			{method: "GET", route: "/hi/", err: `route "/hi/": remove the slash "/" at the end`},
+			{method: "GET", route: "/hi/"},
 			{method: "GET", route: "/hi"},
 		},
 		requests: []*request{
 			{method: "GET", path: "/", status: 200},
-			{method: "GET", path: "/hi/", status: 308, location: "/hi", body: "<a href=\"/hi\">Permanent Redirect</a>.\n\n"},
-			{method: "GET", path: "/hi///", status: 308, location: "/hi", body: "<a href=\"/hi\">Permanent Redirect</a>.\n\n"},
+			{method: "GET", path: "/hi/", status: 200},
+			{method: "GET", path: "/hi///", status: 200},
 		},
 	})
 }
 func TestInsensitive(t *testing.T) {
 	ok(t, &test{
 		routes: []*route{
-			{method: "GET", route: "/HI", err: `route "/HI": uppercase letters are not allowed "H"`},
+			{method: "GET", route: "/HI"},
 			{method: "GET", route: "/hi"},
+			{method: "GET", route: "/Hi"},
+			{method: "GET", route: "/hI"},
+			{method: "GET", route: "/HI/"},
+			{method: "GET", route: "/hi/"},
+			{method: "GET", route: "/hI/"},
+			{method: "GET", route: "/Hi/"},
 		},
 		requests: []*request{
-			{method: "GET", path: "/HI", status: 308, location: "/hi", body: "<a href=\"/hi\">Permanent Redirect</a>.\n\n"},
-			{method: "GET", path: "/Hi", status: 308, location: "/hi", body: "<a href=\"/hi\">Permanent Redirect</a>.\n\n"},
-			{method: "GET", path: "/hI", status: 308, location: "/hi", body: "<a href=\"/hi\">Permanent Redirect</a>.\n\n"},
-			{method: "GET", path: "/HI///", status: 308, location: "/hi", body: "<a href=\"/hi\">Permanent Redirect</a>.\n\n"},
+			{method: "GET", path: "/hi", status: 200},
+			{method: "GET", path: "/HI", status: 200},
+			{method: "GET", path: "/Hi", status: 200},
+			{method: "GET", path: "/hI", status: 200},
+			{method: "GET", path: "/hi/", status: 200},
+			{method: "GET", path: "/HI/", status: 200},
+			{method: "GET", path: "/Hi/", status: 200},
+			{method: "GET", path: "/hI/", status: 200},
+			{method: "GET", path: "/HI///", status: 200},
 		},
 	})
 }
@@ -205,7 +217,7 @@ func TestPut(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	res := rec.Result()
 	is.Equal(200, res.StatusCode)
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	is.NoErr(err)
 	is.Equal("id=10", string(body))
 }
@@ -219,7 +231,7 @@ func TestAdd(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	res := rec.Result()
 	is.Equal(200, res.StatusCode)
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	is.NoErr(err)
 	is.Equal("id=10", string(body))
 }

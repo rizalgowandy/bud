@@ -19,7 +19,7 @@ Bud ships as a single binary that runs on Linux and Mac. You can follow along fo
 The easiest way to get started is by copying and pasting the command below in your terminal:
 
 ```diff
-$ curl -sf https://raw.githubusercontent.com/livebud/bud/main/install.sh | sh
+curl -sf https://raw.githubusercontent.com/livebud/bud/main/install.sh | sh
 ```
 
 This script will download the right binary for your operating system and move the binary to the right location in your `$PATH`.
@@ -55,7 +55,7 @@ The following software is required to use Bud.
 
   This is a temporary requirement that we plan to remove in [v0.3](https://github.com/livebud/bud/discussions/21)
 
-- Go v1.16+
+- Go v1.17+
 
   Bud relies heavily on `io/fs` and will take advantage of generics in the future, so while Go v1.16 will work, we suggest running Go v1.18+ if you can.
 
@@ -96,10 +96,14 @@ Check out the Hacker News [demo](https://www.youtube.com/watch?v=LoypcRqn-xA), r
 
 Recent discussions: [Reddit](https://www.reddit.com/r/golang/comments/uoxocj/bud_the_fullstack_web_framework_for_go_developers/), [Hacker News](https://news.ycombinator.com/item?id=31371340), [Twitter](https://twitter.com/golivebud)
 
+# Real-World Projects
 
-# How did Bud come into existence?
+- [Bass Loop](https://github.com/vito/bass-loop): a CI/CD stack for https://bass-lang.org/.
+- [Welcome Page](https://github.com/livebud/welcome): Bud's welcome page is written in Bud.
 
-I started working on Bud 2 years ago after seeing how productive people could be in [Laravel](https://laravel.com/). I wanted the same for Go, so I decided to try creating Laravel for the Go ecosystem. However, my first version after 6 months needed to scaffold many files just to get started. If you are coming from [Rails](https://github.com/rails/rails) or Laravel, you may shrug and consider this as pretty normal.
+# History of Bud
+
+I started working on Bud in April 2019 after seeing how productive developers could be in [Laravel](https://laravel.com/). I wanted the same for Go, so I decided to try creating Laravel for the Go ecosystem. However, my first version after 6 months needed to scaffold many files just to get started. If you are coming from [Rails](https://github.com/rails/rails) or Laravel, you may shrug and consider this as pretty normal.
 
 Unfortunately, I have been spoiled by the renaissance in frontend frameworks like [Next.js](https://nextjs.org/) that start barebones but every file you add incrementally enhances your web application. This keeps the initial complexity under control.
 
@@ -117,7 +121,6 @@ The goals are now:
 
 - Bud should compile to a single binary that contains your entire web app and can be copied to a server that doesn't even have Go installed.
 
-
 # Contributing
 
-Please refer to the [Contributing Guide](./Contributing.md) to learn how to run and test Bud locally.
+Please refer to the [Contributing Guide](./contributing/Readme.md) to learn how to develop Bud locally.

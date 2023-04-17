@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/livebud/bud/internal/gotemplate"
 	"github.com/livebud/bud/package/commander"
 	"github.com/livebud/bud/package/gomod"
+	"github.com/livebud/bud/package/gotemplate"
 	"github.com/livebud/bud/package/log/console"
 )
 
@@ -29,10 +29,10 @@ func main() {
 
 func run() error {
 	cmd := new(Command)
-	cli := commander.New("generate-changelog")
+	cli := commander.New("generate-changelog", "generates a changelog for the given version")
 	cli.Arg("version").String(&cmd.Version)
 	cli.Run(cmd.Run)
-	return cli.Parse(context.Background(), os.Args[1:])
+	return cli.Parse(context.Background(), os.Args...)
 }
 
 type Command struct {

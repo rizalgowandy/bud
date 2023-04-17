@@ -5,7 +5,7 @@ import (
 	"go/ast"
 	"strconv"
 
-	"github.com/livebud/bud/internal/imports"
+	"github.com/livebud/bud/package/imports"
 )
 
 // File struct
@@ -114,6 +114,24 @@ func (f *File) Functions() (fns []*Function) {
 	return fns
 }
 
+// Function returns a function by name
+func (f *File) Function(name string) *Function {
+	for _, decl := range f.node.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		} else if fn.Name.Name != name {
+			continue
+		}
+		return &Function{
+			pkg:  f.pkg,
+			file: f,
+			node: fn,
+		}
+	}
+	return nil
+}
+
 // Structs returns all the structs in a file
 func (f *File) Structs() (stcts []*Struct) {
 	for _, decl := range f.node.Decls {
@@ -208,9 +226,38 @@ func (f *File) Aliases() (aliases []*Alias) {
 			}
 			aliases = append(aliases, &Alias{
 				file: f,
-				ts:   ts,
+				node: ts,
 			})
 		}
 	}
 	return aliases
+}
+
+func (f *File) TypeSpec(name string) *TypeSpec {
+	for _, ts := range f.TypeSpecs() {
+		if ts.Name() == name {
+			return ts
+		}
+	}
+	return nil
+}
+
+func (f *File) TypeSpecs() (typeSpecs []*TypeSpec) {
+	for _, decl := range f.node.Decls {
+		node, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range node.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Assign != 0 {
+				continue
+			}
+			typeSpecs = append(typeSpecs, &TypeSpec{
+				file: f,
+				node: ts,
+			})
+		}
+	}
+	return typeSpecs
 }

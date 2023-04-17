@@ -2,10 +2,10 @@
 .DS_Store
 
 # Don't commit node_modules
-node_modules/
+node_modules
 
 # Sometimes tests write to _tmp/ don't commit these files
-_tmp/
+_tmp
 
 # Don't commit the build file
 main
@@ -21,3 +21,6 @@ example/scratch
 
 # Release is where we build binaries for release
 /release
+
+# Ignore the VSCode directory
+.vscode/
